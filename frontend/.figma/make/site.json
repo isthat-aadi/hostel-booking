@@ -1,0 +1,10 @@
+{
+  "description": "Streamline hostel booking for students with a user-friendly interface, enabling easy login, roommate preferences, and room selection.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}
