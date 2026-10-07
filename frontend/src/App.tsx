@@ -440,7 +440,6 @@ function Login({ onLogin }: { onLogin: (role: UserRole, user: any) => void }) {
   const [otherCourse, setOtherCourse] = useState("");
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
-  const [yearSemester, setYearSemester] = useState("");
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
@@ -459,7 +458,6 @@ function Login({ onLogin }: { onLogin: (role: UserRole, user: any) => void }) {
           email: email.trim(),
           phone: phone.trim(),
           password,
-          year_semester: yearSemester.trim(),
         });
         setSuccess("Registration successful! Please sign in.");
         setMode("student");
@@ -508,13 +506,13 @@ function Login({ onLogin }: { onLogin: (role: UserRole, user: any) => void }) {
               <label className="field-label" htmlFor="name">Full name</label>
               <div className="input-wrap">
                 <Icon name="user" size={20} />
-                <input id="name" type="text" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. John Doe" required />
+                <input id="name" type="text" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. John Doe" style={{ paddingLeft: '35px' }} required />
               </div>
 
               <label className="field-label" htmlFor="gender">Gender</label>
               <div className="input-wrap">
                 <Icon name="user" size={20} />
-                <select id="gender" value={gender} onChange={(e) => setGender(e.target.value)} style={{ flex: 1, background: 'transparent', border: 'none', outline: 'none', paddingLeft: '10px' }} required>
+                <select id="gender" value={gender} onChange={(e) => setGender(e.target.value)} style={{ flex: 1, background: 'transparent', border: 'none', outline: 'none', paddingLeft: '35px' }} required>
                   <option value="">Select Gender</option>
                   <option value="Male">Male</option>
                   <option value="Female">Female</option>
@@ -524,7 +522,7 @@ function Login({ onLogin }: { onLogin: (role: UserRole, user: any) => void }) {
               <label className="field-label" htmlFor="courseSelection">Course</label>
               <div className="input-wrap">
                 <Icon name="building" size={20} />
-                <select id="courseSelection" value={courseSelection} onChange={(e) => setCourseSelection(e.target.value)} style={{ flex: 1, background: 'transparent', border: 'none', outline: 'none', paddingLeft: '10px' }} required>
+                <select id="courseSelection" value={courseSelection} onChange={(e) => setCourseSelection(e.target.value)} style={{ flex: 1, background: 'transparent', border: 'none', outline: 'none', paddingLeft: '35px' }} required>
                   <option value="">Select Course</option>
                   <option value="B.Tech CSE">B.Tech CSE</option>
                   <option value="B.Tech ECE">B.Tech ECE</option>
@@ -539,7 +537,7 @@ function Login({ onLogin }: { onLogin: (role: UserRole, user: any) => void }) {
                   <label className="field-label" htmlFor="otherCourse">Specify Course</label>
                   <div className="input-wrap">
                     <Icon name="clipboard" size={20} />
-                    <input id="otherCourse" type="text" value={otherCourse} onChange={(e) => setOtherCourse(e.target.value)} placeholder="e.g. B.Des" required />
+                    <input id="otherCourse" type="text" value={otherCourse} onChange={(e) => setOtherCourse(e.target.value)} placeholder="e.g. B.Des" style={{ paddingLeft: '35px' }} required />
                   </div>
                 </>
               )}
@@ -551,7 +549,7 @@ function Login({ onLogin }: { onLogin: (role: UserRole, user: any) => void }) {
           </label>
           <div className="input-wrap">
             <Icon name={mode === "staff" ? "mail" : "user"} size={20} />
-            <input id="identifier" type={mode === "staff" ? "email" : "text"} value={identifier} onChange={(e) => setIdentifier(e.target.value)} placeholder={mode === "staff" ? "e.g. warden.boysa@jklu.test" : "e.g. JKLU2026001"} required />
+            <input id="identifier" type={mode === "staff" ? "email" : "text"} value={identifier} onChange={(e) => setIdentifier(e.target.value)} placeholder={mode === "staff" ? "e.g. warden.boysa@jklu.test" : "e.g. JKLU2026001"} style={{ paddingLeft: '35px' }} required />
           </div>
 
           {mode === "register" && (
@@ -559,19 +557,13 @@ function Login({ onLogin }: { onLogin: (role: UserRole, user: any) => void }) {
               <label className="field-label" htmlFor="email">Email</label>
               <div className="input-wrap">
                 <Icon name="mail" size={20} />
-                <input id="email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="e.g. student@jklu.edu.in" required />
+                <input id="email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="e.g. student@jklu.edu.in" style={{ paddingLeft: '35px' }} required />
               </div>
 
               <label className="field-label" htmlFor="phone">Phone (10 digits)</label>
               <div className="input-wrap">
                 <Icon name="user" size={20} style={{ visibility: 'hidden' }} />
-                <input id="phone" type="tel" pattern="[0-9]{10}" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="e.g. 9876543210" style={{ position: 'relative', left: '-2.5rem', paddingLeft: '1rem' }} required />
-              </div>
-
-              <label className="field-label" htmlFor="yearSemester">Year/Semester</label>
-              <div className="input-wrap">
-                <Icon name="user" size={20} style={{ visibility: 'hidden' }} />
-                <input id="yearSemester" type="text" value={yearSemester} onChange={(e) => setYearSemester(e.target.value)} placeholder="e.g. Year 2 / Sem 3" style={{ position: 'relative', left: '-2.5rem', paddingLeft: '1rem' }} required />
+                <input id="phone" type="tel" pattern="[0-9]{10}" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="e.g. 9876543210" style={{ paddingLeft: '35px' }} required />
               </div>
             </>
           )}
@@ -581,7 +573,7 @@ function Login({ onLogin }: { onLogin: (role: UserRole, user: any) => void }) {
           </div>
           <div className="input-wrap">
             <Icon name="lock" size={20} />
-            <input id="password" type="password" minLength={mode === "register" ? 6 : undefined} value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Enter your password" required />
+            <input id="password" type="password" minLength={mode === "register" ? 6 : undefined} value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Enter your password" style={{ paddingLeft: '35px' }} required />
           </div>
 
           {error && <ErrorToast message={error} onClose={() => setError("")} />}
