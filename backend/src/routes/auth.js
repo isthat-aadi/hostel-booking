@@ -3,17 +3,43 @@ const bcrypt = require('bcryptjs');
 const { pool } = require('../db');
 const { sign, wrap } = require('../middleware');
 
-// Student registration: only students present in admission_record can register
+// Student sign-up.
+//  - If the admission number IS in the college list, name/course/gender are taken from the list
+//    (the student cannot change them).
+//  - If it is NOT in the list, the student types name, gender and course themselves.
+//    The warden verifies identity later by checking the uploaded documents.
 router.post('/register', wrap(async (req, res) => {
-  const { admission_no, email, phone, password, year_semester, hobbies = [] } = req.body;
+  const b = req.body;
+  const admission_no = (b.admission_no || '').trim();
+  const email = (b.email || '').trim().toLowerCase();
+  const phone = (b.phone || '').replace(/\s+/g, '');
+  const password = b.password || '';
+  const hobbies = Array.isArray(b.hobbies) ? b.hobbies : [];
+
   if (!admission_no || !email || !phone || !password) {
-    return res.status(400).json({ error: 'admission_no, email, phone and password are required' });
+    return res.status(400).json({ error: 'Admission number, email, phone and password are required' });
   }
+  if (!/^\S+@\S+\.\S+$/.test(email)) return res.status(400).json({ error: 'Enter a valid email address' });
+  if (!/^\d{10}$/.test(phone)) return res.status(400).json({ error: 'Phone number must be 10 digits' });
   if (password.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters' });
 
+  const [[dup]] = await pool.query('SELECT student_id FROM student WHERE admission_no = ? OR email = ? LIMIT 1',
+    [admission_no, email]);
+  if (dup) return res.status(409).json({ error: 'This admission number or email is already registered' });
+
+  let name, course, gender;
   const [[adm]] = await pool.query('SELECT * FROM admission_record WHERE admission_no = ?', [admission_no]);
-  if (!adm) return res.status(404).json({ error: 'Admission number not found in college records' });
-  if (adm.admission_status !== 'Confirmed') return res.status(403).json({ error: 'Admission is not confirmed yet' });
+  if (adm) {
+    if (adm.admission_status !== 'Confirmed') return res.status(403).json({ error: 'Admission is not confirmed yet' });
+    ({ name, course, gender } = adm);
+  } else {
+    name = (b.name || '').trim();
+    course = (b.course || '').trim();
+    gender = b.gender;
+    if (!name || !course || !['Male', 'Female'].includes(gender)) {
+      return res.status(400).json({ error: 'Name, gender (Male or Female) and course are required' });
+    }
+  }
 
   const hash = await bcrypt.hash(password, 10);
   const conn = await pool.getConnection();
@@ -22,7 +48,7 @@ router.post('/register', wrap(async (req, res) => {
     const [r] = await conn.query(
       `INSERT INTO student (admission_no, name, email, phone, course, year_semester, gender, password_hash)
        VALUES (?,?,?,?,?,?,?,?)`,
-      [adm.admission_no, adm.name, email, phone, adm.course, year_semester || '1st Year / Sem 1', adm.gender, hash]);
+      [admission_no, name, email, phone, course, b.year_semester || '1st Year / Sem 1', gender, hash]);
     for (const hid of hobbies) {
       await conn.query('INSERT IGNORE INTO student_hobby (student_id, hobby_id) VALUES (?,?)', [r.insertId, hid]);
     }
