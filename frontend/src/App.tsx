@@ -14,7 +14,7 @@ type Screen =
   | "warden"
   | "warden-booking"
   | "admin";
-type LoginMode = "student" | "staff";
+type LoginMode = "student" | "staff" | "register";
 type Theme = "light" | "dark";
 type UserRole = "student" | "warden" | "admin";
 
@@ -430,25 +430,53 @@ function Login({ onLogin }: { onLogin: (role: UserRole, user: any) => void }) {
   const [identifier, setIdentifier] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // Register fields
+  const [name, setName] = useState("");
+  const [gender, setGender] = useState("");
+  const [courseSelection, setCourseSelection] = useState("");
+  const [otherCourse, setOtherCourse] = useState("");
+  const [email, setEmail] = useState("");
+  const [phone, setPhone] = useState("");
+  const [yearSemester, setYearSemester] = useState("");
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     setError("");
+    setSuccess("");
     setIsSubmitting(true);
 
     try {
-      const selectedRole = mode === "student" ? "student" : identifier.toLowerCase().includes("admin") ? "admin" : "warden";
-      
-      const data = await apiRequest("/auth/login", "POST", {
-        role: selectedRole,
-        identifier: identifier.trim(),
-        password: password,
-      });
+      if (mode === "register") {
+        const finalCourse = courseSelection === "Other" ? otherCourse : courseSelection;
+        await apiRequest("/auth/register", "POST", {
+          name: name.trim(),
+          gender,
+          course: finalCourse.trim(),
+          admission_no: identifier.trim(),
+          email: email.trim(),
+          phone: phone.trim(),
+          password,
+          year_semester: yearSemester.trim(),
+        });
+        setSuccess("Registration successful! Please sign in.");
+        setMode("student");
+        setPassword("");
+      } else {
+        const selectedRole = mode === "student" ? "student" : identifier.toLowerCase().includes("admin") ? "admin" : "warden";
+        
+        const data = await apiRequest("/auth/login", "POST", {
+          role: selectedRole,
+          identifier: identifier.trim(),
+          password: password,
+        });
 
-      setToken(data.token);
-      setUser(data.user);
-      onLogin(data.user.role, data.user);
+        setToken(data.token);
+        setUser(data.user);
+        onLogin(data.user.role, data.user);
+      }
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -467,40 +495,115 @@ function Login({ onLogin }: { onLogin: (role: UserRole, user: any) => void }) {
 
       <section className="login-card">
         <div className="login-heading">
-          <p className="eyebrow">{mode === "student" ? "STUDENT ACCESS" : "STAFF ACCESS"}</p>
-          <h2>{mode === "student" ? "Student sign in" : "JKLU staff sign in"}</h2>
-          <p>{mode === "student" ? "Enter your admission number to continue." : "Authorised wardens and administrators sign in with official email."}</p>
+          <p className="eyebrow">{mode === "staff" ? "STAFF ACCESS" : "STUDENT ACCESS"}</p>
+          <h2>{mode === "register" ? "Student sign up" : mode === "student" ? "Student sign in" : "JKLU staff sign in"}</h2>
+          <p>{mode === "register" ? "Create your account to book a room." : mode === "student" ? "Enter your admission number to continue." : "Authorised wardens and administrators sign in with official email."}</p>
         </div>
 
+        {success && <div style={{ background: '#dcfce7', color: '#166534', padding: '1rem', borderRadius: '8px', marginBottom: '1rem', fontSize: '0.9rem' }}>{success}</div>}
+
         <form onSubmit={submit}>
+          {mode === "register" && (
+            <>
+              <label className="field-label" htmlFor="name">Full name</label>
+              <div className="input-wrap">
+                <Icon name="user" size={20} />
+                <input id="name" type="text" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. John Doe" required />
+              </div>
+
+              <label className="field-label" htmlFor="gender">Gender</label>
+              <div className="input-wrap">
+                <Icon name="user" size={20} />
+                <select id="gender" value={gender} onChange={(e) => setGender(e.target.value)} style={{ flex: 1, background: 'transparent', border: 'none', outline: 'none', paddingLeft: '10px' }} required>
+                  <option value="">Select Gender</option>
+                  <option value="Male">Male</option>
+                  <option value="Female">Female</option>
+                </select>
+              </div>
+
+              <label className="field-label" htmlFor="courseSelection">Course</label>
+              <div className="input-wrap">
+                <Icon name="building" size={20} />
+                <select id="courseSelection" value={courseSelection} onChange={(e) => setCourseSelection(e.target.value)} style={{ flex: 1, background: 'transparent', border: 'none', outline: 'none', paddingLeft: '10px' }} required>
+                  <option value="">Select Course</option>
+                  <option value="B.Tech CSE">B.Tech CSE</option>
+                  <option value="B.Tech ECE">B.Tech ECE</option>
+                  <option value="B.Tech ME">B.Tech ME</option>
+                  <option value="BBA">BBA</option>
+                  <option value="Other">Other</option>
+                </select>
+              </div>
+
+              {courseSelection === "Other" && (
+                <>
+                  <label className="field-label" htmlFor="otherCourse">Specify Course</label>
+                  <div className="input-wrap">
+                    <Icon name="clipboard" size={20} />
+                    <input id="otherCourse" type="text" value={otherCourse} onChange={(e) => setOtherCourse(e.target.value)} placeholder="e.g. B.Des" required />
+                  </div>
+                </>
+              )}
+            </>
+          )}
+
           <label className="field-label" htmlFor="identifier">
-            {mode === "student" ? "Admission number" : "JKLU email address"}
+            {mode === "staff" ? "JKLU email address" : "Admission number"}
           </label>
           <div className="input-wrap">
-            <Icon name={mode === "student" ? "user" : "mail"} size={20} />
-            <input id="identifier" type={mode === "student" ? "text" : "email"} value={identifier} onChange={(e) => setIdentifier(e.target.value)} placeholder={mode === "student" ? "e.g. JKLU2026001" : "e.g. warden.boysa@jklu.test"} required />
+            <Icon name={mode === "staff" ? "mail" : "user"} size={20} />
+            <input id="identifier" type={mode === "staff" ? "email" : "text"} value={identifier} onChange={(e) => setIdentifier(e.target.value)} placeholder={mode === "staff" ? "e.g. warden.boysa@jklu.test" : "e.g. JKLU2026001"} required />
           </div>
 
+          {mode === "register" && (
+            <>
+              <label className="field-label" htmlFor="email">Email</label>
+              <div className="input-wrap">
+                <Icon name="mail" size={20} />
+                <input id="email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="e.g. student@jklu.edu.in" required />
+              </div>
+
+              <label className="field-label" htmlFor="phone">Phone (10 digits)</label>
+              <div className="input-wrap">
+                <Icon name="user" size={20} style={{ visibility: 'hidden' }} />
+                <input id="phone" type="tel" pattern="[0-9]{10}" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="e.g. 9876543210" style={{ position: 'relative', left: '-2.5rem', paddingLeft: '1rem' }} required />
+              </div>
+
+              <label className="field-label" htmlFor="yearSemester">Year/Semester</label>
+              <div className="input-wrap">
+                <Icon name="user" size={20} style={{ visibility: 'hidden' }} />
+                <input id="yearSemester" type="text" value={yearSemester} onChange={(e) => setYearSemester(e.target.value)} placeholder="e.g. Year 2 / Sem 3" style={{ position: 'relative', left: '-2.5rem', paddingLeft: '1rem' }} required />
+              </div>
+            </>
+          )}
+
           <div className="password-row">
-            <label className="field-label" htmlFor="password">Password</label>
+            <label className="field-label" htmlFor="password">Password {mode === "register" && "(min 6)"}</label>
           </div>
           <div className="input-wrap">
             <Icon name="lock" size={20} />
-            <input id="password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Enter your password" required />
+            <input id="password" type="password" minLength={mode === "register" ? 6 : undefined} value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Enter your password" required />
           </div>
 
           {error && <ErrorToast message={error} onClose={() => setError("")} />}
 
           <PrimaryButton type="submit" disabled={isSubmitting}>
-            {isSubmitting ? "Signing in..." : mode === "student" ? "Sign in as a student" : "Continue to staff portal"}
+            {isSubmitting ? (mode === "register" ? "Registering..." : "Signing in...") : mode === "register" ? "Sign up" : mode === "student" ? "Sign in as a student" : "Continue to staff portal"}
           </PrimaryButton>
         </form>
 
-        <p className="help-text">
-          {mode === "student" ? "JKLU warden or administrator? " : "Are you a student? "}
-          <button onClick={() => { setMode(mode === "student" ? "staff" : "student"); setError(""); }}>
-            {mode === "student" ? "Access the staff portal" : "Return to student sign in"}
-          </button>
+        <p className="help-text" style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginTop: '1rem' }}>
+          {mode === "student" && (
+            <>
+              <span>New student? <button onClick={() => { setMode("register"); setError(""); setSuccess(""); }} type="button">Sign up here</button></span>
+              <span>JKLU warden or administrator? <button onClick={() => { setMode("staff"); setError(""); setSuccess(""); }} type="button">Access the staff portal</button></span>
+            </>
+          )}
+          {mode === "register" && (
+            <span>Already registered? <button onClick={() => { setMode("student"); setError(""); setSuccess(""); }} type="button">Sign in here</button></span>
+          )}
+          {mode === "staff" && (
+            <span>Are you a student? <button onClick={() => { setMode("student"); setError(""); setSuccess(""); }} type="button">Return to student sign in</button></span>
+          )}
         </p>
       </section>
     </main>
