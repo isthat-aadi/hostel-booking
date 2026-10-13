@@ -45,6 +45,13 @@ router.post('/register', wrap(async (req, res) => {
   const conn = await pool.getConnection();
   try {
     await conn.beginTransaction();
+    if (!adm) {
+      // Student is not in the college list: add a record so the admission_no foreign key is satisfied
+      await conn.query(
+        `INSERT INTO admission_record (admission_no, name, email, phone, course, gender, admission_status)
+         VALUES (?,?,?,?,?,?,'Confirmed')`,
+        [admission_no, name, email, phone, course, gender]);
+    }
     const [r] = await conn.query(
       `INSERT INTO student (admission_no, name, email, phone, course, year_semester, gender, password_hash)
        VALUES (?,?,?,?,?,?,?,?)`,

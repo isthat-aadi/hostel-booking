@@ -317,6 +317,138 @@ button {
   background: #f3f6f9;
 }
 
+.page-back-button {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1.5px solid var(--line);
+  background: var(--surface);
+  color: var(--navy);
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(26, 45, 83, 0.08);
+  transition: background 0.18s ease, color 0.18s ease, border-color 0.18s ease, transform 0.18s ease;
+  flex-shrink: 0;
+}
+
+.page-back-button:hover {
+  color: var(--orange);
+  border-color: var(--orange);
+  transform: translateX(-2px);
+}
+
+.global-back-row {
+  width: min(1200px, calc(100% - 40px));
+  margin: 0 auto;
+  padding-top: 22px;
+}
+
+.global-back-row + .page-shell {
+  padding-top: 18px;
+}
+
+/* Icon + text labels */
+.tag-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  vertical-align: middle;
+}
+
+.tag-label svg {
+  flex-shrink: 0;
+}
+
+.tag-row,
+.receipt-tags,
+.sheet-tags,
+.room-meta-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+}
+
+.receipt-tags {
+  margin-top: 14px;
+  color: var(--navy);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.sheet-tags {
+  margin: 6px 0 8px;
+  color: var(--navy);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.room-meta-line {
+  justify-content: center;
+}
+
+.tag-row {
+  gap: 4px 12px;
+}
+
+.floor-slab em.floor-regular {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--muted);
+  background: rgba(104, 115, 134, 0.12);
+}
+
+.floor-slab em.floor-quiet {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.room-type {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.bed-copy small.tag-label {
+  gap: 4px;
+}
+
+/* Hostel photo cards */
+.hostel-photo {
+  position: relative;
+  width: 100%;
+  height: 200px;
+  overflow: hidden;
+  background: linear-gradient(145deg, #f8fafc, #e3eaf3);
+  border-radius: 24px 24px 0 0;
+}
+
+.hostel-photo img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transition: transform 0.5s ease;
+}
+
+.hostel-card:hover .hostel-photo img {
+  transform: scale(1.04);
+}
+
+.hostel-photo-fallback {
+  display: grid;
+  place-items: center;
+  color: #7b8da8;
+}
+
+.hostel-card-copy {
+  padding: 20px 26px 24px;
+}
+
 .sun-button {
   color: #526176;
   transition:
@@ -1204,11 +1336,13 @@ button {
 
 .hostel-card {
   position: relative;
-  min-height: 330px;
+  min-height: 0;
   display: flex;
+  flex-direction: column;
   overflow: hidden;
-  align-items: flex-end;
-  padding: 28px;
+  align-items: stretch;
+  justify-content: flex-start;
+  padding: 0;
   color: var(--navy);
   background: white;
   border: 1px solid rgba(216, 225, 236, 0.9);
@@ -5420,15 +5554,16 @@ footer {
   }
 
   .hostel-card {
-    min-height: 275px;
-    padding: 21px;
+    min-height: 0;
+    padding: 0;
   }
 
-  .hostel-building {
-    top: 20px;
-    right: 20px;
-    left: 20px;
-    height: 175px;
+  .hostel-photo {
+    height: 170px;
+  }
+
+  .hostel-card-copy {
+    padding: 16px 20px 20px;
   }
 
   .hostel-card-copy {
@@ -5969,4 +6104,346 @@ footer {
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
+}
+
+/* Student dashboard top block and hero card */
+.welcome-header {
+  margin-bottom: 30px;
+}
+
+.welcome-header h1 {
+  margin: 10px 0 10px;
+  color: var(--navy);
+  font-size: clamp(34px, 5vw, 50px);
+  line-height: 1.06;
+  letter-spacing: -0.045em;
+}
+
+.welcome-header p:last-child {
+  margin: 0;
+  color: var(--muted);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.action-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 28px;
+  padding: 30px 32px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 24px;
+  box-shadow: var(--shadow);
+}
+
+.action-card .card-content {
+  display: grid;
+  gap: 8px;
+  max-width: 640px;
+  color: var(--orange);
+}
+
+.action-card h3 {
+  margin: 6px 0 0;
+  color: var(--navy);
+  font-size: 26px;
+  letter-spacing: -0.03em;
+}
+
+.action-card p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.65;
+}
+
+@media (max-width: 720px) {
+  .action-card {
+    flex-direction: column;
+    align-items: flex-start;
+    padding: 24px 22px;
+  }
+}
+
+/* Phase 2 additions */
+.booking-state.held {
+  color: #8f681b;
+  background: #fff0bd;
+}
+
+.booking-state.cancelled {
+  color: #5d6b80;
+  background: #e8edf4;
+}
+
+.state-message:not(.rejected):not(.expired) {
+  color: var(--navy);
+  background: rgba(244, 122, 10, 0.08);
+  align-items: center;
+}
+
+.state-message .inline-action {
+  margin-left: auto;
+  padding: 9px 16px;
+  color: #fff;
+  background: var(--navy-soft);
+  border: 0;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.text-link {
+  justify-self: start;
+  padding: 0;
+  color: var(--orange);
+  background: none;
+  border: 0;
+  font-size: 13px;
+  font-weight: 700;
+  text-decoration: underline;
+}
+
+.cancel-booking:disabled,
+.document-actions button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Who is in a taken bed */
+.bed-card.held,
+.bed-card.pending,
+.bed-card.booked {
+  min-height: 150px;
+}
+
+.bed-copy {
+  min-width: 0;
+}
+
+.bed-occupant {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(26, 45, 83, 0.18);
+  color: var(--navy);
+}
+
+.bed-occupant b {
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bed-occupant i {
+  overflow: hidden;
+  font-size: 10px;
+  font-style: normal;
+  opacity: 0.8;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bed-occupant em {
+  font-size: 9px;
+  font-style: normal;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  opacity: 0.7;
+}
+
+:root[data-theme="dark"] .bed-card.booked .bed-occupant {
+  color: #243247;
+  border-top-color: rgba(36, 50, 71, 0.25);
+}
+
+.bed-card.held,
+.bed-card.pending,
+.bed-card.booked {
+  padding-top: 52px;
+}
+
+/* Taken beds: dark readable text on the yellow and grey cards, in light and dark mode */
+.bed-card.held,
+.bed-card.pending,
+:root[data-theme="dark"] .bed-card.held,
+:root[data-theme="dark"] .bed-card.pending {
+  color: #14213d;
+}
+
+:root[data-theme="dark"] .bed-card.booked {
+  color: #1c2a3f;
+  background: #c4ccd8;
+  border-color: #9aa6b8;
+}
+
+.bed-card.held .bed-copy small,
+.bed-card.pending .bed-copy small,
+.bed-card.booked .bed-copy small {
+  opacity: 0.9;
+}
+
+.bed-card.held .bed-occupant,
+.bed-card.pending .bed-occupant,
+.bed-card.booked .bed-occupant,
+:root[data-theme="dark"] .bed-card.held .bed-occupant,
+:root[data-theme="dark"] .bed-card.pending .bed-occupant,
+:root[data-theme="dark"] .bed-card.booked .bed-occupant {
+  color: #14213d;
+  border-top-color: rgba(20, 33, 61, 0.35);
+}
+
+.bed-occupant b {
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.bed-occupant i {
+  font-size: 11px;
+  font-weight: 600;
+  opacity: 1;
+}
+
+.bed-occupant em {
+  opacity: 1;
+  color: #5b3d00;
+}
+
+.bed-card.booked .bed-occupant em {
+  color: #3a4a63;
+}
+
+/* Warden screens */
+.notice-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 20px;
+  padding: 14px 18px;
+  color: #166534;
+  background: #dcfce7;
+  border: 1px solid #b7ebc9;
+  border-radius: 14px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.notice-banner span {
+  flex: 1;
+}
+
+.notice-banner button {
+  color: inherit;
+  background: none;
+  border: 0;
+  font-size: 22px;
+  line-height: 1;
+}
+
+.document-preview iframe,
+.document-preview img {
+  display: block;
+  width: 100%;
+  height: 280px;
+  object-fit: contain;
+  background: #fff;
+  border: 0;
+  border-radius: 10px;
+}
+
+.preview-note {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.reassign-remark {
+  width: 100%;
+  padding: 12px 14px;
+  color: var(--navy);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  font: inherit;
+}
+
+.review-hobbies i:only-child {
+  opacity: 0.7;
+}
+
+/* Room cards: students of the same course */
+.course-match {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  margin-top: 6px;
+  padding: 3px 8px;
+  color: #157b5c;
+  background: #dcf7ec;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.2;
+  text-align: center;
+}
+
+:root[data-theme="dark"] .course-match {
+  color: #7be0bb;
+  background: rgba(31, 184, 130, 0.16);
+}
+
+/* Admin extras */
+.extra-input {
+  margin: 6px 0;
+}
+
+.extra-active {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 0;
+  color: var(--navy);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.extra-save {
+  margin-top: 8px;
+  padding: 7px 16px;
+  color: #fff;
+  background: var(--navy-soft);
+  border: 0;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.save-fees:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.extra-charge-grid article > div {
+  display: grid;
+  justify-items: start;
+  gap: 4px;
+}
+
+.extra-save {
+  position: static;
+  display: inline-block;
+  margin-top: 10px;
+}
+
+.extra-active input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
 }

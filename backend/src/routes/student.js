@@ -75,8 +75,7 @@ router.get('/hostels', freshHolds, wrap(async (req, res) => {
             COUNT(v.bed_id) AS total_beds,
             COUNT(CASE WHEN v.bed_status = 'Available' THEN 1 END) AS free_beds
        FROM hostel h LEFT JOIN v_bed_availability v ON v.hostel_id = h.hostel_id
-      WHERE h.gender = ? GROUP BY h.hostel_id, h.hostel_name, h.gender, h.total_floors ORDER BY h.hostel_name`,
-    [req.user.gender]);
+      GROUP BY h.hostel_id, h.hostel_name, h.gender, h.total_floors ORDER BY h.hostel_name`);
   res.json(rows);
 }));
 
@@ -95,11 +94,16 @@ router.get('/hostels/:id/floors', freshHolds, wrap(async (req, res) => {
 router.get('/floors/:id/rooms', freshHolds, wrap(async (req, res) => {
   const [rows] = await pool.query(
     `SELECT r.room_id, r.room_number, r.room_type, r.is_ac, r.capacity, r.status,
-            o.occupied_seats, o.in_progress_seats, o.free_seats
+            o.occupied_seats, o.in_progress_seats, o.free_seats,
+            (SELECT COUNT(*) FROM booking bk
+               JOIN student s2 ON s2.student_id = bk.student_id
+               JOIN bed b2 ON b2.bed_id = bk.active_bed_id
+              WHERE b2.room_id = r.room_id
+                AND s2.course = (SELECT course FROM student WHERE student_id = ?)) AS same_course_count
        FROM room r JOIN floor f ON f.floor_id = r.floor_id JOIN hostel h ON h.hostel_id = f.hostel_id
        JOIN v_room_occupancy o ON o.room_id = r.room_id
       WHERE r.floor_id = ? AND h.gender = ? ORDER BY r.room_number`,
-    [req.params.id, req.user.gender]);
+    [req.user.id, req.params.id, req.user.gender]);
   res.json(rows);
 }));
 
@@ -107,8 +111,13 @@ router.get('/rooms/:id/beds', freshHolds, wrap(async (req, res) => {
   const [rows] = await pool.query(
     `SELECT v.bed_id, v.bed_number, v.bed_level, v.near_window, v.bed_status,
             v.base_semester_fee, fn_window_charge(v.bed_id) AS window_charge,
-            fn_bed_total(v.bed_id) AS price_total
-       FROM v_bed_availability v WHERE v.room_id = ? AND v.hostel_gender = ? ORDER BY v.bed_number`,
+            fn_bed_total(v.bed_id) AS price_total,
+            CASE WHEN v.bed_status IN ('Held','Pending','Booked') THEN st.name END   AS occupant_name,
+            CASE WHEN v.bed_status IN ('Held','Pending','Booked') THEN st.course END AS occupant_course
+       FROM v_bed_availability v
+       LEFT JOIN booking bk ON bk.active_bed_id = v.bed_id
+       LEFT JOIN student st ON st.student_id = bk.student_id
+      WHERE v.room_id = ? AND v.hostel_gender = ? ORDER BY v.bed_number`,
     [req.params.id, req.user.gender]);
   res.json(rows);
 }));

@@ -18,6 +18,8 @@ router.get('/stats', wrap(async (req, res) => {
               WHERE p.payment_status = 'Paid') AS money_collected`);
   const [perHostel] = await pool.query(
     `SELECT hostel_name, COUNT(*) AS total_beds, SUM(bed_status = 'Booked') AS booked,
+            SUM(bed_status IN ('Held','Pending')) AS in_progress,
+            SUM(bed_status = 'Blocked') AS blocked,
             SUM(bed_status = 'Available') AS available FROM v_bed_availability GROUP BY hostel_id, hostel_name`);
   res.json({ ...s, per_hostel: perHostel });
 }));
@@ -54,6 +56,16 @@ router.post('/hostels', wrap(async (req, res) => {
   const [r] = await pool.query('INSERT INTO hostel (hostel_name, gender, total_floors) VALUES (?,?,?)',
     [hostel_name, gender, total_floors]);
   res.status(201).json({ hostel_id: r.insertId });
+}));
+router.get('/floors', wrap(async (req, res) => {
+  const hostelId = req.query.hostel_id || null;
+  const [rows] = await pool.query(
+    `SELECT f.floor_id, f.hostel_id, f.floor_number, f.floor_type, COUNT(r.room_id) AS rooms
+       FROM floor f LEFT JOIN room r ON r.floor_id = f.floor_id
+      WHERE (? IS NULL OR f.hostel_id = ?)
+      GROUP BY f.floor_id, f.hostel_id, f.floor_number, f.floor_type
+      ORDER BY f.hostel_id, f.floor_number`, [hostelId, hostelId]);
+  res.json(rows);
 }));
 router.post('/floors', wrap(async (req, res) => {
   const { hostel_id, floor_number, floor_type } = req.body;

@@ -1,5 +1,5 @@
-import { FormEvent, ReactNode, useEffect, useState } from "react";
-import { apiRequest, setToken, setUser, getToken, getUser, removeToken } from "./api";
+import { FormEvent, ReactNode, useEffect, useRef, useState } from "react";
+import { apiRequest, setToken, setUser, getToken, getUser, removeToken, fetchFileBlobUrl } from "./api";
 import "./index.css"; // Ensures CSS stays attached!
 
 type Screen =
@@ -14,6 +14,8 @@ type Screen =
   | "warden"
   | "warden-booking"
   | "admin";
+const HOLD_DEFAULT_MINUTES = 30;
+
 type LoginMode = "student" | "staff" | "register";
 type Theme = "light" | "dark";
 type UserRole = "student" | "warden" | "admin";
@@ -45,6 +47,7 @@ type Room = {
   occupied_seats: number;
   in_progress_seats: number;
   free_seats: number;
+  same_course_count?: number;
 };
 
 type BedStatus = "Available" | "Held" | "Pending" | "Booked" | "Blocked";
@@ -55,6 +58,8 @@ type Bed = {
   bed_level: "Lower" | "Upper" | "Single";
   near_window: boolean;
   bed_status: BedStatus;
+  occupant_name?: string | null;
+  occupant_course?: string | null;
   base_semester_fee: number;
   window_charge: number;
   price_total: number;
@@ -70,10 +75,11 @@ type BookingDocument = {
   remarks: string;
 };
 
-type BookingState = "Pending" | "Approved" | "Rejected" | "Expired";
+type BookingState = "Held" | "Pending" | "Approved" | "Rejected" | "Cancelled" | "Expired";
 
 type WardenBooking = {
-  booking_id: string;
+  booking_id: number;
+  receipt_no?: string | null;
   student_name: string;
   course: string;
   floor_number: number;
@@ -81,6 +87,8 @@ type WardenBooking = {
   bed_number: number;
   bed_level: string;
   near_window: boolean;
+  room_type?: string;
+  is_ac?: boolean;
   total_amount: number;
   docs_uploaded: number;
   docs_verified: number;
@@ -159,6 +167,7 @@ function Icon({
       </>
     ),
     arrow: <path d="M5 12h14M14 7l5 5-5 5" />,
+    arrowLeft: <path d="M19 12H5M10 17l-5-5 5-5" />,
     check: <path d="m5 12 4 4L19 6" />,
     user: (
       <>
@@ -186,6 +195,35 @@ function Icon({
         <path d="M12 2v20M4.93 6l14.14 12M4.93 18 19.07 6M8 4l4 2 4-2M8 20l4-2 4 2M3.5 10 7 12l-.5 4M20.5 10 17 12l.5 4" />
       </>
     ),
+    bedDown: (
+      <>
+        <g transform="translate(0 5) scale(0.78)">
+          <path d="M3 20v-8M21 20v-6a2 2 0 0 0-2-2H9a2 2 0 0 0-2 2v3M3 17h18M7 12V8H5a2 2 0 0 0-2 2v4" />
+        </g>
+        <path d="M20.5 2.5v7M18 7l2.5 2.5L23 7" />
+      </>
+    ),
+    bedUp: (
+      <>
+        <g transform="translate(0 5) scale(0.78)">
+          <path d="M3 20v-8M21 20v-6a2 2 0 0 0-2-2H9a2 2 0 0 0-2 2v3M3 17h18M7 12V8H5a2 2 0 0 0-2 2v4" />
+        </g>
+        <path d="M20.5 9.5v-7M18 5l2.5-2.5L23 5" />
+      </>
+    ),
+    speakerOff: (
+      <>
+        <path d="M11 5 6.5 9H3v6h3.5L11 19z" />
+        <path d="m22 9-6 6M16 9l6 6" />
+      </>
+    ),
+    sparkle: (
+      <>
+        <path d="M11 3l1.9 5.6L18.5 10.5l-5.6 1.9L11 18l-1.9-5.6L3.5 10.5l5.6-1.9z" />
+        <path d="M19 16l.8 2.2 2.2.8-2.2.8L19 22l-.8-2.2-2.2-.8 2.2-.8z" />
+      </>
+    ),
+    layers: <path d="M12 3 3 8l9 5 9-5zM3 13l9 5 9-5" />,
     chevron: <path d="m9 18 6-6-6-6" />,
     upload: (
       <>
@@ -238,6 +276,98 @@ function Icon({
   };
 
   return <svg {...common}>{paths[name]}</svg>;
+}
+
+function PeopleGlyph({ count, size = 16 }: { count: number; size?: number }) {
+  const width = count * 11;
+  return (
+    <svg
+      width={(size * width) / 20}
+      height={size}
+      viewBox={`0 0 ${width} 20`}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.9}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      {Array.from({ length: count }, (_, index) => (
+        <g key={index} transform={`translate(${index * 11} 0)`}>
+          <circle cx="5.5" cy="6" r="3" />
+          <path d="M0.8 19a4.7 4.7 0 0 1 9.4 0" />
+        </g>
+      ))}
+    </svg>
+  );
+}
+
+type TagKind = "room" | "ac" | "bed" | "floor";
+
+function TagIcon({ kind, value, size = 16 }: { kind: TagKind; value: string; size?: number }) {
+  if (kind === "room") {
+    if (value === "Double") return <PeopleGlyph count={2} size={size} />;
+    if (value === "Quad") return <PeopleGlyph count={4} size={size} />;
+  }
+  if (kind === "ac") {
+    if (value === "AC") return <Icon name="snowflake" size={size} />;
+    if (value === "Non-AC") return <Icon name="sun" size={size} />;
+  }
+  if (kind === "bed") {
+    if (value === "Lower") return <Icon name="bedDown" size={size} />;
+    if (value === "Upper") return <Icon name="bedUp" size={size} />;
+    if (value === "Single" || value === "Standard") return <Icon name="bed" size={size} />;
+  }
+  if (kind === "floor") {
+    if (value === "Regular") return <Icon name="building" size={size} />;
+    if (value === "Quiet") return <Icon name="speakerOff" size={size} />;
+  }
+  return <Icon name={value === "All" ? "layers" : "sparkle"} size={size} />;
+}
+
+function TagLabel({
+  kind,
+  value,
+  text,
+  size = 16,
+}: {
+  kind: TagKind;
+  value: string;
+  text?: string;
+  size?: number;
+}) {
+  return (
+    <span className="tag-label">
+      <TagIcon kind={kind} value={value} size={size} />
+      <span>{text ?? value}</span>
+    </span>
+  );
+}
+
+function HostelPhoto({ name }: { name: string }) {
+  const match = name.match(/(boys|girls)\s+hostel\s+([a-z])/i);
+  const specific = match ? `/hostels/${match[1].toLowerCase()}-${match[2].toLowerCase()}.jpg` : null;
+  const sources = [specific, "/hostels/hostel.jpg"].filter(Boolean) as string[];
+  const [index, setIndex] = useState(0);
+
+  if (index >= sources.length) {
+    return (
+      <div className="hostel-photo hostel-photo-fallback" role="img" aria-label={`${name} building`}>
+        <Icon name="building" size={46} />
+      </div>
+    );
+  }
+
+  return (
+    <div className="hostel-photo">
+      <img
+        src={sources[index]}
+        alt={`${name} building exterior`}
+        loading="lazy"
+        onError={() => setIndex((current) => current + 1)}
+      />
+    </div>
+  );
 }
 
 function Header({
@@ -295,7 +425,7 @@ function Header({
       </div>
 
       {open && (
-        <nav className="nav-menu" aria-label="Prototype screens">
+        <nav className="nav-menu" aria-label="Main menu">
           <button className={screen === "login" ? "active" : ""} onClick={() => go("login")}>
             {role ? "Sign out" : "Login"}
           </button>
@@ -404,6 +534,19 @@ function EmptyState({
   );
 }
 
+function BackButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      className="icon-button page-back-button"
+      onClick={onClick}
+      aria-label="Go back"
+      title="Go back"
+    >
+      <Icon name="arrowLeft" size={22} />
+    </button>
+  );
+}
+
 function ErrorToast({
   message,
   onClose,
@@ -459,7 +602,7 @@ function Login({ onLogin }: { onLogin: (role: UserRole, user: any) => void }) {
           phone: phone.trim(),
           password,
         });
-        setSuccess("Registration successful! Please sign in.");
+        setSuccess("You are registered. Sign in to begin.");
         setMode("student");
         setPassword("");
       } else {
@@ -610,24 +753,29 @@ const trackerSteps = [
   "Warden Approval",
 ];
 
-function ProgressTracker() {
+function ProgressTracker({ current, title }: { current: number; title: string }) {
+  // current: 1-5 = the step in progress, 6 = everything finished
+  const percent = current >= 6 ? 100 : current * 20;
   return (
     <section className="tracker-card">
       <div className="tracker-top">
         <div>
           <p className="card-label">YOUR BOOKING JOURNEY</p>
-          <h2>Let’s get you settled</h2>
+          <h2>{title}</h2>
         </div>
-        <span>Step 2 of 5</span>
+        <span>{current >= 6 ? "All steps done" : `Step ${current} of 5`}</span>
       </div>
       <div className="progress-track">
-        <span />
+        <span style={{ width: `${percent}%` }} />
       </div>
       <div className="steps">
         {trackerSteps.map((step, index) => (
-          <div className={`step ${index === 0 ? "done" : ""} ${index === 1 ? "current" : ""}`} key={step}>
+          <div
+            className={`step ${index + 1 < current ? "done" : ""} ${index + 1 === current ? "current" : ""}`}
+            key={step}
+          >
             <div className="step-dot">
-              {index === 0 ? <Icon name="check" size={15} /> : index + 1}
+              {index + 1 < current ? <Icon name="check" size={15} /> : index + 1}
             </div>
             <span>{step}</span>
           </div>
@@ -637,28 +785,102 @@ function ProgressTracker() {
   );
 }
 
-const stats = [
-  { label: "Hostel", value: "Not chosen", icon: "building", theme: "orange" },
-  { label: "Room", value: "Not chosen", icon: "bed", theme: "green" },
-  { label: "Amount Due", value: "Rs 0", icon: "wallet", theme: "purple" },
-  { label: "Booking Status", value: "Not started", icon: "clipboard", theme: "red" },
-];
+function Home({ onGo }: { onGo: (screen: Screen) => void }) {
+  const cached = getUser();
+  const [me, setMe] = useState<any>(null);
+  const [data, setData] = useState<BookingData>(null);
+  const [hasPrefs, setHasPrefs] = useState(false);
+  const [ready, setReady] = useState(false);
+  const [error, setError] = useState("");
 
-function Home({ onContinue }: { onContinue: () => void }) {
-  const user = getUser(); 
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const [meData, bookingData, prefData] = await Promise.all([
+          apiRequest("/student/me", "GET"),
+          loadBooking(),
+          apiRequest("/student/preferences", "GET"),
+        ]);
+        if (!alive) return;
+        setMe(meData);
+        setData(bookingData);
+        setHasPrefs(Boolean(prefData?.preferences));
+      } catch (err: any) {
+        if (alive) setError(err.message);
+      } finally {
+        if (alive) setReady(true);
+      }
+    })();
+    return () => { alive = false; };
+  }, []);
+
+  const fullName: string = me?.name || cached?.name || "";
+  const firstName = fullName.trim().split(/\s+/)[0];
+  const admissionNo: string = me?.admission_no || "";
+  const subline = admissionNo
+    ? [admissionNo, me?.course].filter(Boolean).join(" · ")
+    : error
+      ? "Details unavailable right now"
+      : "Loading your details...";
+
+  const booking = data?.booking;
+  const status: string = booking?.status || "";
+  const live = ["Held", "Pending", "Approved"].includes(status);
+  const total = data?.receipt?.total_amount ? Number(data.receipt.total_amount) : 0;
+  const paid = booking?.payment_status === "Paid";
+
+  const current = status === "Approved" ? 6 : status === "Pending" ? 5 : status === "Held" ? 4 : hasPrefs ? 3 : 2;
+  const trackerTitle =
+    status === "Approved"
+      ? "You are all set"
+      : status === "Pending"
+        ? "Waiting for the warden"
+        : status === "Held"
+          ? "Your bed is waiting for you"
+          : "Let’s get you settled";
+
+  const stats = [
+    { label: "Hostel", value: live ? booking.hostel_name : "Not chosen", icon: "building", theme: "orange" },
+    {
+      label: "Room",
+      value: live ? `${booking.room_number} • Bed ${booking.bed_number}` : "Not chosen",
+      icon: "bed",
+      theme: "green",
+    },
+    {
+      label: "Amount Due",
+      value: formatMoney(status === "Held" && !paid ? total : 0),
+      icon: "wallet",
+      theme: "purple",
+    },
+    {
+      label: "Booking Status",
+      value: ["Rejected", "Expired", "Cancelled"].includes(status) ? status : status || "Not started",
+      icon: "clipboard",
+      theme: "red",
+    },
+  ];
+
+  const next: { screen: Screen; label: string } =
+    status === "Held"
+      ? { screen: "fee-receipt", label: "Continue to payment" }
+      : status === "Pending" || status === "Approved"
+        ? { screen: "booking-status", label: "See my booking" }
+        : hasPrefs
+          ? { screen: "choose-room", label: "Choose my room" }
+          : { screen: "preferences", label: "Start my booking" };
 
   return (
     <main className="page-shell student-dashboard">
       <section className="welcome-header">
-        <p className="eyebrow">STUDENT DASHBOARD</p>
-        <h1>Welcome, {user?.name || "Student"}!</h1>
-        <p>Admission No: {user?.identifier || user?.admission_no || "N/A"}</p>
+        <p className="eyebrow">YOUR HOSTEL JOURNEY</p>
+        <h1>{firstName ? `Welcome back, ${firstName}` : "Welcome back"}</h1>
+        <p>{subline}</p>
       </section>
 
-      {/* Put the beautiful Progress Tracker back! */}
-      <ProgressTracker />
+      <ProgressTracker current={current} title={trackerTitle} />
 
-      {/* Put the beautiful Stat Cards back! */}
       <section className="stats-grid">
         {stats.map((stat) => (
           <article className="stat-card" key={stat.label}>
@@ -666,10 +888,10 @@ function Home({ onContinue }: { onContinue: () => void }) {
               <Icon name={stat.icon} size={24} />
             </div>
             <div>
-              <p className="card-label" style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+              <p className="card-label" style={{ fontSize: '11px', color: 'var(--muted)' }}>
                 {stat.label.toUpperCase()}
               </p>
-              <h2>{stat.value}</h2>
+              <h2>{ready ? stat.value : "..."}</h2>
             </div>
           </article>
         ))}
@@ -678,15 +900,21 @@ function Home({ onContinue }: { onContinue: () => void }) {
       <section className="dashboard-cards" style={{ marginTop: "2rem" }}>
         <div className="card action-card">
           <div className="card-content">
-            <Icon name="home" size={24} />
-            <h3>Hostel Booking 2026-27</h3>
-            <p>Select your preferences and book your room for the upcoming academic session.</p>
+            <Icon name="building" size={24} />
+            <h3>Find your place at JKLU</h3>
+            <p>Tell us how you like to live, choose your exact bed and get matched with roommates who fit. Session 2026-27.</p>
+            {hasPrefs && (
+              <button type="button" className="text-link" onClick={() => onGo("preferences")}>
+                Update my preferences
+              </button>
+            )}
           </div>
-          <PrimaryButton onClick={onContinue}>
-            Start Booking Application
+          <PrimaryButton disabled={!ready} onClick={() => onGo(next.screen)}>
+            {next.label}
           </PrimaryButton>
         </div>
       </section>
+      {error && <ErrorToast message={error} onClose={() => setError("")} />}
     </main>
   );
 }
@@ -696,11 +924,13 @@ function ChoiceGroup({
   options,
   value,
   onChange,
+  kind,
 }: {
   title: string;
   options: string[];
   value: string;
   onChange: (value: string) => void;
+  kind?: TagKind;
 }) {
   return (
     <fieldset className="choice-field">
@@ -714,7 +944,7 @@ function ChoiceGroup({
             key={option}
           >
             {value === option && <Icon name="check" size={14} />}
-            {option}
+            {kind ? <TagLabel kind={kind} value={option} size={15} /> : option}
           </button>
         ))}
       </div>
@@ -723,33 +953,93 @@ function ChoiceGroup({
 }
 
 // RESTORED your beautiful Preferences form exactly how it was!
-function Preferences({ onSave }: { onSave: () => void }) {
+function Preferences({ onSave }: { onSave: () => void; onBack: () => void }) {
   const [course, setCourse] = useState("B.Tech");
   const [sleep, setSleep] = useState("Flexible");
   const [cleanliness, setCleanliness] = useState("Average");
   const [study, setStudy] = useState("Quiet");
-  const [selectedHobbies, setSelectedHobbies] = useState<string[]>(["Coding", "Music"]);
+  const [hobbyList, setHobbyList] = useState<{ hobby_id: number; hobby_name: string }[]>([]);
+  const [selectedHobbies, setSelectedHobbies] = useState<number[]>([]);
   const [floor, setFloor] = useState("Any");
   const [room, setRoom] = useState("Double");
   const [ac, setAc] = useState("Any");
   const [bed, setBed] = useState("Any");
   const [windowBed, setWindowBed] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
 
-  const toggleHobby = (hobby: string) => {
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const [hobbyRows, saved] = await Promise.all([
+          apiRequest("/student/hobbies", "GET"),
+          apiRequest("/student/preferences", "GET"),
+        ]);
+        if (!alive) return;
+        setHobbyList(hobbyRows);
+        const p = saved?.preferences;
+        if (p) {
+          setCourse(p.preferred_course || "Any course");
+          setSleep(p.sleep_schedule);
+          setCleanliness(p.cleanliness);
+          setStudy(p.study_style);
+          setFloor(p.preferred_floor_type);
+          setRoom(p.preferred_room_type);
+          setAc(p.wants_ac);
+          setBed(p.preferred_bed_level);
+          setWindowBed(Boolean(Number(p.wants_window_bed)));
+        }
+        setSelectedHobbies((saved?.hobbies || []).map((h: any) => Number(h.hobby_id)));
+      } catch (err: any) {
+        if (alive) setError(err.message);
+      } finally {
+        if (alive) setLoading(false);
+      }
+    })();
+    return () => { alive = false; };
+  }, []);
+
+  const toggleHobby = (hobbyId: number) => {
     setSelectedHobbies((current) =>
-      current.includes(hobby)
-        ? current.filter((item) => item !== hobby)
-        : [...current, hobby],
+      current.includes(hobbyId)
+        ? current.filter((item) => item !== hobbyId)
+        : [...current, hobbyId],
     );
   };
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      await apiRequest("/student/preferences", "PUT", {
+        sleep_schedule: sleep,
+        cleanliness,
+        study_style: study,
+        preferred_course: course === "Any course" ? null : course,
+        preferred_floor_type: floor,
+        preferred_room_type: room,
+        wants_ac: ac,
+        preferred_bed_level: bed,
+        wants_window_bed: windowBed,
+        hobbies: selectedHobbies,
+      });
+      onSave();
+    } catch (err: any) {
+      setError(err.message);
+      setSaving(false);
+    }
+  };
+
+  if (loading) return <ScreenSkeleton />;
 
   return (
     <main className="page-shell preferences-page">
       <section className="page-heading">
         <div>
           <p className="eyebrow">STEP 2 OF 5</p>
-          <h1>Roommate Preferences</h1>
-          <p>Help us find someone whose lifestyle fits well with yours.</p>
+          <h1>Tell us how you live</h1>
+          <p>A few quick choices help us match you with roommates who fit your routine.</p>
         </div>
         <span className="completion-badge">About 3 minutes</span>
       </section>
@@ -762,27 +1052,27 @@ function Preferences({ onSave }: { onSave: () => void }) {
         className="preferences-form"
         onSubmit={(event) => {
           event.preventDefault();
-          onSave();
+          save();
         }}
       >
         <section className="form-card">
           <div className="section-heading">
             <span>01</span>
             <div>
-              <h2>Academic & lifestyle</h2>
-              <p>Start with the basics of your daily routine.</p>
+              <h2>Your daily routine</h2>
+              <p>When you sleep, how you study and how tidy you like things.</p>
             </div>
           </div>
 
           <label className="select-field">
             <span>Preferred course</span>
             <select value={course} onChange={(event) => setCourse(event.target.value)}>
-              <option>B.Tech</option>
-              <option>BBA</option>
-              <option>B.Des</option>
-              <option>M.Tech</option>
-              <option>MBA</option>
-              <option>Any course</option>
+              {["B.Tech", "BBA", "B.Des", "M.Tech", "MBA", "Any course"].map((item) => (
+                <option key={item}>{item}</option>
+              ))}
+              {!["B.Tech", "BBA", "B.Des", "M.Tech", "MBA", "Any course"].includes(course) && (
+                <option>{course}</option>
+              )}
             </select>
           </label>
 
@@ -812,20 +1102,20 @@ function Preferences({ onSave }: { onSave: () => void }) {
           <div className="section-heading">
             <span>02</span>
             <div>
-              <h2>Interests & hobbies</h2>
-              <p>Select as many as you like.</p>
+              <h2>What you enjoy</h2>
+              <p>Pick as many hobbies as you like. Shared interests raise your match score.</p>
             </div>
           </div>
           <div className="hobby-chips">
-            {hobbies.map((hobby) => (
+            {hobbyList.map((hobby) => (
               <button
                 type="button"
-                key={hobby}
-                className={selectedHobbies.includes(hobby) ? "active" : ""}
-                onClick={() => toggleHobby(hobby)}
+                key={hobby.hobby_id}
+                className={selectedHobbies.includes(hobby.hobby_id) ? "active" : ""}
+                onClick={() => toggleHobby(hobby.hobby_id)}
               >
-                {selectedHobbies.includes(hobby) && <Icon name="check" size={14} />}
-                {hobby}
+                {selectedHobbies.includes(hobby.hobby_id) && <Icon name="check" size={14} />}
+                {hobby.hobby_name}
               </button>
             ))}
           </div>
@@ -835,32 +1125,36 @@ function Preferences({ onSave }: { onSave: () => void }) {
           <div className="section-heading">
             <span>03</span>
             <div>
-              <h2>Room preferences</h2>
-              <p>Choose the room setup that works for you.</p>
+              <h2>Your ideal room</h2>
+              <p>Tell us what you would like. You still choose the exact bed yourself.</p>
             </div>
           </div>
 
           <div className="choice-grid room-grid">
             <ChoiceGroup
               title="Preferred floor type"
+              kind="floor"
               options={["Regular", "Quiet", "Any"]}
               value={floor}
               onChange={setFloor}
             />
             <ChoiceGroup
               title="Room type"
+              kind="room"
               options={["Double", "Quad", "Any"]}
               value={room}
               onChange={setRoom}
             />
             <ChoiceGroup
               title="Cooling"
+              kind="ac"
               options={["AC", "Non-AC", "Any"]}
               value={ac}
               onChange={setAc}
             />
             <ChoiceGroup
               title="Bed level"
+              kind="bed"
               options={["Lower", "Upper", "Any"]}
               value={bed}
               onChange={setBed}
@@ -870,7 +1164,7 @@ function Preferences({ onSave }: { onSave: () => void }) {
           <label className="toggle-row">
             <span className="toggle-copy">
               <strong>I want a window-side bed</strong>
-              <small>Extra Rs 10,000 will be added to your hostel fee</small>
+              <small>A window bed adds Rs 10,000 to your hostel fee</small>
             </span>
             <input
               type="checkbox"
@@ -884,119 +1178,59 @@ function Preferences({ onSave }: { onSave: () => void }) {
         </section>
 
         <div className="save-row">
-          <p>Your choices can be updated until you select a room.</p>
-          <PrimaryButton type="submit">Save preferences</PrimaryButton>
+          <p>You can change these any time before you hold a bed.</p>
+          <PrimaryButton type="submit" disabled={saving}>
+            {saving ? "Saving..." : "Save and choose my room"}
+          </PrimaryButton>
         </div>
       </form>
+      {error && <ErrorToast message={error} onClose={() => setError("")} />}
     </main>
   );
 }
 
-const hostels: Hostel[] = [
-  {
-    hostel_id: 1,
-    hostel_name: "Boys Hostel A",
-    gender: "Male",
-    total_floors: 8,
-    total_beds: 640,
-    free_beds: 480,
-  },
-  {
-    hostel_id: 2,
-    hostel_name: "Boys Hostel B",
-    gender: "Male",
-    total_floors: 8,
-    total_beds: 640,
-    free_beds: 480,
-  },
-  {
-    hostel_id: 3,
-    hostel_name: "Girls Hostel A",
-    gender: "Female",
-    total_floors: 8,
-    total_beds: 640,
-    free_beds: 480,
-  },
-  {
-    hostel_id: 4,
-    hostel_name: "Girls Hostel B",
-    gender: "Female",
-    total_floors: 8,
-    total_beds: 640,
-    free_beds: 480,
-  },
-];
+const formatMoney = (value: number) => `Rs ${Number(value).toLocaleString("en-IN")}`;
 
-const floors: Floor[] = Array.from({ length: 8 }, (_, index) => ({
-  floor_id: index + 1,
-  floor_number: index + 1,
-  floor_type: index === 7 ? "Quiet" : "Regular",
-  total_beds: 80,
-  free_beds: [52, 61, 48, 57, 63, 44, 56, 39][index],
-}));
+type BookingData = {
+  booking: any;
+  receipt: any;
+  documents: any[];
+  roommates: any[];
+} | null;
 
-const rooms: Room[] = Array.from({ length: 20 }, (_, index) => {
-  const capacity = index < 10 ? 4 : 2;
-  const occupied = [0, 1, 2, 4, 3, 1, 4, 2, 0, 3, 0, 1, 2, 1, 0, 2, 1, 0, 2, 1][index];
-  const inProgress = occupied < capacity && index % 6 === 2 ? 1 : 0;
-  const free = Math.max(0, capacity - occupied - inProgress);
-  return {
-    room_id: index + 1,
-    room_number: String(101 + index),
-    room_type: index < 10 ? "Quad" : "Double",
-    is_ac: index % 3 !== 1,
-    capacity,
-    status: free === 0 ? "Full" : "Available",
-    occupied_seats: occupied,
-    in_progress_seats: inProgress,
-    free_seats: free,
-  };
-});
+const loadBooking = (): Promise<BookingData> => apiRequest("/student/booking", "GET");
 
-const room101Beds: Bed[] = [
-  {
-    bed_id: 1,
-    bed_number: 1,
-    bed_level: "Lower",
-    near_window: true,
-    bed_status: "Available",
-    base_semester_fee: 86750,
-    window_charge: 10000,
-    price_total: 96750,
-  },
-  {
-    bed_id: 2,
-    bed_number: 2,
-    bed_level: "Upper",
-    near_window: true,
-    bed_status: "Pending",
-    base_semester_fee: 84250,
-    window_charge: 10000,
-    price_total: 94250,
-  },
-  {
-    bed_id: 3,
-    bed_number: 3,
-    bed_level: "Lower",
-    near_window: false,
-    bed_status: "Available",
-    base_semester_fee: 86750,
-    window_charge: 0,
-    price_total: 86750,
-  },
-  {
-    bed_id: 4,
-    bed_number: 4,
-    bed_level: "Upper",
-    near_window: false,
-    bed_status: "Booked",
-    base_semester_fee: 84250,
-    window_charge: 0,
-    price_total: 84250,
-  },
-];
+const rememberBooking = (bookingId: number, holdMinutes?: number) => {
+  window.localStorage.setItem("booking_id", String(bookingId));
+  if (holdMinutes) window.localStorage.setItem("hold_minutes", String(holdMinutes));
+};
 
-const formatMoney = (value: number) => `Rs ${value.toLocaleString("en-IN")}`;
+// Parses "YYYY-MM-DD HH:MM:SS" (or ISO) into seconds left from now
+const secondsUntil = (value: string): number | null => {
+  const when = new Date(String(value).replace(" ", "T")).getTime();
+  if (!Number.isFinite(when)) return null;
+  return Math.max(0, Math.round((when - Date.now()) / 1000));
+};
+
+const DOC_LABELS: Record<string, string> = {
+  PAYMENT_RECEIPT: "Hostel fee payment receipt",
+  ALLOTMENT_FORM: "Hostel allotment form",
+};
+const DOC_ENDPOINTS: Record<string, string> = {
+  PAYMENT_RECEIPT: "payment-receipt",
+  ALLOTMENT_FORM: "allotment-form",
+};
+
+// Checks the file, then uploads it. Throws an Error with a readable message.
+async function uploadDocumentFile(bookingId: number, docType: string, file: File) {
+  const allowed = ["application/pdf", "image/jpeg", "image/png"];
+  if (!allowed.includes(file.type) || file.size > 5 * 1024 * 1024) {
+    throw new Error("Use a PDF, JPG, or PNG file up to 5 MB.");
+  }
+  const form = new FormData();
+  form.append("file", file);
+  return apiRequest(`/student/bookings/${bookingId}/documents/${DOC_ENDPOINTS[docType]}`, "POST", form, true);
+}
 
 function BookingBreadcrumb({
   step,
@@ -1027,23 +1261,30 @@ function BookingBreadcrumb({
 // THIS IS THE CORRECT PLACE to fetch real hostel data!
 function HostelStep({ onSelect }: { onSelect: (hostel: Hostel) => void }) {
   const [selected, setSelected] = useState<number | null>(null);
-  const [liveHostels, setLiveHostels] = useState<Hostel[]>(hostels); // defaults to hardcoded
+  const [liveHostels, setLiveHostels] = useState<Hostel[]>([]);
+  const [loaded, setLoaded] = useState(false);
+  const [error, setError] = useState("");
   
   const user = getUser();
   const studentGender = user?.gender || "Male";
 
   useEffect(() => {
-    async function fetchHostels() {
-      try {
-        const data = await apiRequest("/student/hostels", "GET");
-        if (data && data.length > 0) {
-          setLiveHostels(data);
-        }
-      } catch (err) {
-        console.error("Could not load live hostels, using fallback data.");
-      }
-    }
-    fetchHostels();
+    let alive = true;
+    apiRequest("/student/hostels", "GET")
+      .then((data) => {
+        if (!alive) return;
+        setLiveHostels(
+          data.map((h: any) => ({
+            ...h,
+            total_floors: Number(h.total_floors),
+            total_beds: Number(h.total_beds),
+            free_beds: Number(h.free_beds),
+          })),
+        );
+      })
+      .catch((err) => { if (alive) setError(err.message); })
+      .finally(() => { if (alive) setLoaded(true); });
+    return () => { alive = false; };
   }, []);
 
   const choose = (hostel: Hostel) => {
@@ -1057,12 +1298,16 @@ function HostelStep({ onSelect }: { onSelect: (hostel: Hostel) => void }) {
       <div className="room-step-heading">
         <p className="eyebrow">CHOOSE YOUR BUILDING</p>
         <h1>Which hostel feels like home?</h1>
-        <p>All JKLU hostels are shown below. Eligibility comes from your verified profile.</p>
+        <p>Pick the building you want to live in. Only the hostels that match your profile can be chosen.</p>
         <span className="student-gender-note">
           <Icon name="user" size={14} />
           Profile gender: {studentGender}
         </span>
       </div>
+      {loaded && liveHostels.length === 0 && !error && (
+        <EmptyState title="No hostels to show" message="We could not find a hostel for your profile. Please contact the hostel office." />
+      )}
+      {error && <ErrorToast message={error} onClose={() => setError("")} />}
       <div className="hostel-grid">
         {liveHostels.map((hostel) => {
           const eligible = hostel.gender === studentGender;
@@ -1075,16 +1320,7 @@ function HostelStep({ onSelect }: { onSelect: (hostel: Hostel) => void }) {
               disabled={!eligible}
               key={hostel.hostel_id}
             >
-            <div className="hostel-building" aria-hidden="true">
-              {Array.from({ length: hostel.total_floors }, (_, index) => (
-                <span key={index}>
-                  <i />
-                  <i />
-                  <i />
-                  <i />
-                </span>
-              ))}
-            </div>
+            <HostelPhoto name={hostel.hostel_name} />
             <div className="hostel-card-copy">
               <span className="availability-dot" />
               <div>
@@ -1111,6 +1347,26 @@ function FloorStep({
   onSelect: (floor: Floor) => void;
 }) {
   const [selected, setSelected] = useState<number | null>(null);
+  const [floors, setFloors] = useState<Floor[]>([]);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let alive = true;
+    apiRequest(`/student/hostels/${hostel.hostel_id}/floors`, "GET")
+      .then((data) => {
+        if (!alive) return;
+        setFloors(
+          data.map((f: any) => ({
+            ...f,
+            floor_number: Number(f.floor_number),
+            total_beds: Number(f.total_beds),
+            free_beds: Number(f.free_beds),
+          })),
+        );
+      })
+      .catch((err) => { if (alive) setError(err.message); });
+    return () => { alive = false; };
+  }, [hostel.hostel_id]);
 
   const choose = (floor: Floor) => {
     setSelected(floor.floor_id);
@@ -1121,8 +1377,8 @@ function FloorStep({
     <section className="booking-step step-enter">
       <div className="room-step-heading compact">
         <p className="eyebrow">{hostel.hostel_name.toUpperCase()}</p>
-        <h1>Choose a floor</h1>
-        <p>Select a floor to see its available rooms.</p>
+        <h1>Pick your floor</h1>
+        <p>Tap a floor to see which rooms still have free beds.</p>
       </div>
       <div className="floor-layout">
         <div className="building-side-label">
@@ -1140,12 +1396,16 @@ function FloorStep({
             >
               <span className="floor-number">{String(floor.floor_number).padStart(2, "0")}</span>
               <strong>Floor {floor.floor_number}</strong>
-              {floor.floor_type === "Quiet" && <em>Quiet floor</em>}
+              <em className={floor.floor_type === "Quiet" ? "floor-quiet" : "floor-regular"}>
+                <TagIcon kind="floor" value={floor.floor_type} size={11} />
+                {floor.floor_type === "Quiet" ? "Quiet floor" : "Regular floor"}
+              </em>
               <span className="floor-free">{floor.free_beds} beds free</span>
             </button>
           ))}
         </div>
       </div>
+      {error && <ErrorToast message={error} onClose={() => setError("")} />}
     </section>
   );
 }
@@ -1163,7 +1423,33 @@ function RoomStep({
 }) {
   const [filter, setFilter] = useState<RoomFilter>("All");
   const [selected, setSelected] = useState<number | null>(null);
+  const [rooms, setRooms] = useState<Room[]>([]);
+  const [loaded, setLoaded] = useState(false);
+  const [error, setError] = useState("");
   const filters: RoomFilter[] = ["All", "Quad", "Double", "AC", "Non-AC"];
+
+  useEffect(() => {
+    let alive = true;
+    apiRequest(`/student/floors/${floor.floor_id}/rooms`, "GET")
+      .then((data) => {
+        if (!alive) return;
+        setRooms(
+          data.map((r: any) => ({
+            ...r,
+            is_ac: Boolean(Number(r.is_ac)),
+            capacity: Number(r.capacity),
+            occupied_seats: Number(r.occupied_seats),
+            in_progress_seats: Number(r.in_progress_seats),
+            free_seats: Number(r.free_seats),
+            same_course_count: Number(r.same_course_count || 0),
+          })),
+        );
+      })
+      .catch((err) => { if (alive) setError(err.message); })
+      .finally(() => { if (alive) setLoaded(true); });
+    return () => { alive = false; };
+  }, [floor.floor_id]);
+
   const visibleRooms = rooms.filter((room) => {
     if (filter === "Quad" || filter === "Double") return room.room_type === filter;
     if (filter === "AC") return room.is_ac;
@@ -1183,8 +1469,8 @@ function RoomStep({
         <p className="eyebrow">
           {hostel.hostel_name.toUpperCase()} • FLOOR {floor.floor_number}
         </p>
-        <h1>Pick a room</h1>
-        <p>Filled dots show occupied seats. Choose any room with a free bed.</p>
+        <h1>Find your room</h1>
+        <p>Filled dots are taken beds. Choose any room that still has a free bed.</p>
       </div>
 
       <div className="room-filters" aria-label="Filter rooms">
@@ -1194,11 +1480,19 @@ function RoomStep({
             onClick={() => setFilter(item)}
             key={item}
           >
-            {item}
+            {item === "All" || item === "Quad" || item === "Double" ? (
+              <TagLabel kind="room" value={item} size={14} />
+            ) : (
+              <TagLabel kind="ac" value={item} size={14} />
+            )}
           </button>
         ))}
       </div>
 
+      {loaded && visibleRooms.length === 0 && !error && (
+        <EmptyState title="No rooms match" message="Try another filter to see more rooms on this floor." />
+      )}
+      {error && <ErrorToast message={error} onClose={() => setError("")} />}
       <div className="room-grid-tiles">
         {visibleRooms.map((room) => (
           <button
@@ -1209,12 +1503,13 @@ function RoomStep({
             onClick={() => choose(room)}
             key={room.room_id}
           >
-            <span className="room-type">{room.room_type}</span>
-            {room.is_ac && (
-              <span className="ac-icon" title="Air conditioned">
-                <Icon name="snowflake" size={15} />
-              </span>
-            )}
+            <span className="room-type">
+              <TagIcon kind="room" value={room.room_type} size={11} />
+              {room.room_type}
+            </span>
+            <span className="ac-icon" title={room.is_ac ? "Air conditioned" : "Non-AC"}>
+              <TagIcon kind="ac" value={room.is_ac ? "AC" : "Non-AC"} size={15} />
+            </span>
             <strong>{room.room_number}</strong>
             <span className="seat-dots" aria-label={`${room.occupied_seats} occupied seats`}>
               {Array.from({ length: room.capacity }, (_, index) => (
@@ -1231,41 +1526,17 @@ function RoomStep({
               ))}
             </span>
             <small>{room.free_seats === 0 ? "Full" : `${room.free_seats} free`}</small>
+            {Number(room.same_course_count) > 0 && (
+              <span className="course-match">
+                <Icon name="user" size={11} />
+                {room.same_course_count} from your course
+              </span>
+            )}
           </button>
         ))}
       </div>
     </section>
   );
-}
-
-function makeBeds(room: Room): Bed[] {
-  if (room.room_number === "101") return room101Beds;
-  return Array.from({ length: room.capacity }, (_, index) => {
-    const nearWindow = index < (room.room_type === "Quad" ? 2 : 1);
-    const level =
-      room.room_type === "Double" ? "Single" : index % 2 === 0 ? "Lower" : "Upper";
-    const statuses: BedStatus[] = ["Available", "Held", "Pending", "Booked", "Blocked"];
-    const bedStatus =
-      index < room.occupied_seats
-        ? index % 2
-          ? "Blocked"
-          : "Booked"
-        : index < room.occupied_seats + room.in_progress_seats
-          ? statuses[(room.room_id + index) % 2 + 1]
-          : "Available";
-    const baseFee = level === "Upper" ? 84250 : 86750;
-    const windowCharge = nearWindow ? 10000 : 0;
-    return {
-      bed_id: room.room_id * 10 + index + 1,
-      bed_number: index + 1,
-      bed_level: level,
-      near_window: nearWindow,
-      bed_status: bedStatus,
-      base_semester_fee: baseFee,
-      window_charge: windowCharge,
-      price_total: baseFee + windowCharge,
-    };
-  });
 }
 
 function BedCard({
@@ -1287,7 +1558,17 @@ function BedCard({
       <span className="bed-pillow" />
       <span className="bed-copy">
         <strong>Bed {bed.bed_number}</strong>
-        <small>{bed.bed_level}</small>
+        <small className="tag-label">
+          <TagIcon kind="bed" value={bed.bed_level} size={15} />
+          {bed.bed_level}
+        </small>
+        {bed.occupant_name && (
+          <span className="bed-occupant">
+            <b title={bed.occupant_name}>{bed.occupant_name}</b>
+            <i title={bed.occupant_course || ""}>{bed.occupant_course}</i>
+            <em>{bed.bed_status === "Booked" ? "Booked" : "Being processed"}</em>
+          </span>
+        )}
       </span>
       {bed.near_window && (
         <span className="window-bed-icon">
@@ -1309,10 +1590,51 @@ function BedStep({
   room: Room;
   onHold: () => void;
 }) {
-  const beds = makeBeds(room);
+  const [beds, setBeds] = useState<Bed[]>([]);
+  const [loaded, setLoaded] = useState(false);
+  const [holding, setHolding] = useState(false);
+  const [error, setError] = useState("");
   const [selectedBed, setSelectedBed] = useState<Bed | null>(null);
 
-  useEffect(() => setSelectedBed(null), [room.room_id]);
+  useEffect(() => {
+    setSelectedBed(null);
+    setLoaded(false);
+    let alive = true;
+    apiRequest(`/student/rooms/${room.room_id}/beds`, "GET")
+      .then((data) => {
+        if (!alive) return;
+        setBeds(
+          data.map((b: any) => ({
+            ...b,
+            bed_id: Number(b.bed_id),
+            bed_number: Number(b.bed_number),
+            near_window: Boolean(Number(b.near_window)),
+            base_semester_fee: Number(b.base_semester_fee),
+            window_charge: Number(b.window_charge),
+            price_total: Number(b.price_total),
+          })),
+        );
+      })
+      .catch((err) => { if (alive) setError(err.message); })
+      .finally(() => { if (alive) setLoaded(true); });
+    return () => { alive = false; };
+  }, [room.room_id]);
+
+  const holdBed = async () => {
+    if (!selectedBed || holding) return;
+    setHolding(true);
+    try {
+      const result = await apiRequest("/student/bookings", "POST", { bed_id: selectedBed.bed_id });
+      rememberBooking(Number(result.booking_id), Number(result.hold_minutes));
+      onHold();
+    } catch (err: any) {
+      setError(err.message);
+      setHolding(false);
+    }
+  };
+
+  const needed = room.room_type === "Quad" ? 4 : 2;
+  const layoutReady = loaded && beds.length >= needed;
 
   return (
     <section className="booking-step bed-step step-enter">
@@ -1322,8 +1644,10 @@ function BedStep({
           {room.room_number}
         </p>
         <h1>Choose your bed</h1>
-        <p>
-          {room.room_type} {room.is_ac ? "AC" : "Non-AC"} room • Select an available bed.
+        <p className="room-meta-line">
+          <TagLabel kind="room" value={room.room_type} text={`${room.room_type} room`} size={15} />
+          <TagLabel kind="ac" value={room.is_ac ? "AC" : "Non-AC"} size={15} />
+          <span>Tap a free bed to see its price.</span>
         </p>
       </div>
 
@@ -1338,6 +1662,11 @@ function BedStep({
         )}
       </div>
 
+      {loaded && !layoutReady && !error && (
+        <EmptyState title="Beds are not available" message="This room has no bed layout yet. Please pick another room." />
+      )}
+      {error && <ErrorToast message={error} onClose={() => setError("")} />}
+      {layoutReady && (
       <div className={`room-plan ${room.room_type.toLowerCase()}`}>
         <div className="window-fixture">
           <Icon name="sun" size={18} />
@@ -1391,6 +1720,7 @@ function BedStep({
           DOOR
         </div>
       </div>
+      )}
 
       {selectedBed && (
         <aside className="bed-sheet" aria-live="polite">
@@ -1400,8 +1730,16 @@ function BedStep({
             <div>
               <p className="card-label">YOUR SELECTION</p>
               <h2>
-                Bed {selectedBed.bed_number} • {selectedBed.bed_level}
+                Bed {selectedBed.bed_number}
               </h2>
+              <div className="sheet-tags">
+                <TagLabel kind="room" value={room.room_type} size={15} />
+                <TagLabel kind="ac" value={room.is_ac ? "AC" : "Non-AC"} size={15} />
+                <TagLabel kind="bed" value={selectedBed.bed_level} text={`${selectedBed.bed_level} bed`} size={15} />
+                {selectedBed.near_window && (
+                  <span className="tag-label"><Icon name="sun" size={15} /><span>Window side</span></span>
+                )}
+              </div>
               <p>
                 Room {room.room_number}, Floor {floor.floor_number}, {hostel.hostel_name}
               </p>
@@ -1418,14 +1756,18 @@ function BedStep({
               Total <strong>{formatMoney(selectedBed.price_total)}</strong>
             </span>
           </div>
-          <PrimaryButton onClick={onHold}>Hold this bed for 10 minutes</PrimaryButton>
+          <PrimaryButton onClick={holdBed} disabled={holding}>
+            {holding ? "Holding your bed..." : `Hold this bed for ${HOLD_DEFAULT_MINUTES} minutes`}
+          </PrimaryButton>
         </aside>
       )}
     </section>
   );
 }
 
-function ChooseRoom({ onHold }: { onHold: () => void }) {
+function ChooseRoom({ onHold, onExisting, registerBackHandler }: { onHold: () => void; onExisting: (screen: Screen) => void; registerBackHandler: (fn: (() => boolean) | null) => void }) {
+  const [checking, setChecking] = useState(true);
+  const [checkError, setCheckError] = useState("");
   const [step, setStep] = useState(1);
   const [hostel, setHostel] = useState<Hostel | null>(null);
   const [floor, setFloor] = useState<Floor | null>(null);
@@ -1438,8 +1780,49 @@ function ChooseRoom({ onHold }: { onHold: () => void }) {
     if (nextStep < 2) setHostel(null);
   };
 
+  // A student with a live booking must not pick again: send them to the right screen
+  useEffect(() => {
+    let alive = true;
+    loadBooking()
+      .then((data) => {
+        if (!alive) return;
+        const booking = data?.booking;
+        if (booking?.status === "Held") {
+          rememberBooking(Number(booking.booking_id));
+          onExisting("fee-receipt");
+        } else if (booking?.status === "Pending" || booking?.status === "Approved") {
+          onExisting("booking-status");
+        } else {
+          setChecking(false);
+        }
+      })
+      .catch((err) => {
+        if (!alive) return;
+        setCheckError(err.message);
+        setChecking(false);
+      });
+    return () => { alive = false; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Register/unregister internal back handler with parent
+  useEffect(() => {
+    registerBackHandler(() => {
+      if (step > 1) {
+        navigateBack(step - 1);
+        return true; // handled internally
+      }
+      return false; // let parent handle (go to home)
+    });
+    return () => registerBackHandler(null);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step]);
+
+  if (checking) return <ScreenSkeleton />;
+
   return (
     <main className="page-shell room-booking-page">
+      {checkError && <ErrorToast message={checkError} onClose={() => setCheckError("")} />}
       <BookingBreadcrumb step={step} onStep={navigateBack} />
       {step === 1 && (
         <HostelStep
@@ -1475,52 +1858,136 @@ function ChooseRoom({ onHold }: { onHold: () => void }) {
   );
 }
 
-const feeItems = [
-  { item_type: "HOSTEL_FEE", description: "Hostel semester fee", amount: 38000 },
-  { item_type: "UTILITY", description: "Utilities and maintenance", amount: 12500 },
-  { item_type: "MESS_ADVANCE", description: "Mess advance", amount: 31250 },
-  { item_type: "SECURITY_DEPOSIT", description: "Refundable security deposit", amount: 5000 },
-  {
-    item_type: "WINDOW_PREFERENCE",
-    description: "Window-side bed preference",
-    amount: 10000,
-  },
-];
-
 type TransportChoice = "none" | "semester" | "yearly";
 
-function FeeReceipt({ onNext }: { onNext: () => void }) {
-  const [secondsLeft, setSecondsLeft] = useState(2 * 60 * 60 - 1);
+const TRANSPORT_CODE: Record<TransportChoice, string> = { none: "NONE", semester: "SEM", yearly: "YEAR" };
+
+function FeeReceipt({ onNext, onGo }: { onNext: () => void; onGo: (screen: Screen) => void; onBack: () => void }) {
+  const [loaded, setLoaded] = useState(false);
+  const [booking, setBooking] = useState<any>(null);
+  const [receipt, setReceipt] = useState<any>(null);
+  const [secondsLeft, setSecondsLeft] = useState<number | null>(null);
   const [transport, setTransport] = useState<TransportChoice>("none");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const buildReceipt = async (bookingId: number, choice: TransportChoice) => {
+    const result = await apiRequest(`/student/bookings/${bookingId}/receipt`, "POST", {
+      transport: TRANSPORT_CODE[choice],
+    });
+    setReceipt(result);
+    return result;
+  };
 
   useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const data = await loadBooking();
+        if (!alive) return;
+        const b = data?.booking;
+        if (b && (b.status === "Pending" || b.status === "Approved")) {
+          onGo("booking-status");
+          return;
+        }
+        setBooking(b || null);
+        if (b?.status === "Held") {
+          rememberBooking(Number(b.booking_id));
+          const left = b.hold_expires_at ? secondsUntil(b.hold_expires_at) : null;
+          const fallback = Number(window.localStorage.getItem("hold_minutes")) || HOLD_DEFAULT_MINUTES;
+          setSecondsLeft(left ?? fallback * 60);
+          if (data?.receipt) {
+            // Keep the transport choice the student made earlier
+            const transportLine = (data.receipt.items || []).find((i: any) => i.item_type === "TRANSPORT");
+            const amount = transportLine ? Number(transportLine.amount) : 0;
+            setTransport(amount === 52500 ? "yearly" : amount > 0 ? "semester" : "none");
+            setReceipt(data.receipt);
+          } else {
+            await buildReceipt(Number(b.booking_id), "none");
+          }
+        }
+      } catch (err: any) {
+        if (alive) setError(err.message);
+      } finally {
+        if (alive) setLoaded(true);
+      }
+    })();
+    return () => { alive = false; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (secondsLeft === null) return;
     const timer = window.setInterval(
-      () => setSecondsLeft((current) => Math.max(0, current - 1)),
+      () => setSecondsLeft((current) => (current === null ? null : Math.max(0, current - 1))),
       1000,
     );
     return () => window.clearInterval(timer);
-  }, []);
+  }, [secondsLeft === null]);
 
-  const transportAmount =
-    transport === "semester" ? 26250 : transport === "yearly" ? 52500 : 0;
-  const total =
-    feeItems.reduce((sum, item) => sum + item.amount, 0) + transportAmount;
-  const hours = Math.floor(secondsLeft / 3600);
-  const minutes = Math.floor((secondsLeft % 3600) / 60);
-  const seconds = secondsLeft % 60;
-  const countdown = [hours, minutes, seconds]
+  const changeTransport = async (choice: TransportChoice) => {
+    if (!booking || busy || choice === transport) return;
+    setBusy(true);
+    try {
+      await buildReceipt(Number(booking.booking_id), choice);
+      setTransport(choice);
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!loaded) return <ScreenSkeleton />;
+
+  const expired = !booking || booking.status !== "Held" || secondsLeft === 0;
+  if (expired) {
+    return (
+      <main className="page-shell payment-page">
+        <div className="state-message expired">
+          <Icon name="clock" size={20} />
+          <div>
+            <strong>Hold expired, pick again</strong>
+            <p>Your bed was released because time ran out. Choose a bed to continue.</p>
+          </div>
+        </div>
+        <div className="receipt-action">
+          <p>Your preferences are saved. Nothing else to redo.</p>
+          <PrimaryButton onClick={() => onGo("choose-room")}>Choose a bed again</PrimaryButton>
+        </div>
+        {error && <ErrorToast message={error} onClose={() => setError("")} />}
+      </main>
+    );
+  }
+
+  const left = secondsLeft ?? 0;
+  const hours = Math.floor(left / 3600);
+  const minutes = Math.floor((left % 3600) / 60);
+  const seconds = left % 60;
+  const countdown = (hours > 0 ? [hours, minutes, seconds] : [minutes, seconds])
     .map((value) => String(value).padStart(2, "0"))
     .join(":");
+  const items: { item_type: string; description: string; amount: string | number }[] = receipt?.items || [];
+  const total = Number(receipt?.total_amount || 0);
+  const isAc = Boolean(Number(booking.is_ac));
 
   return (
     <main className="page-shell payment-page">
       <section className="page-heading">
         <div>
           <p className="eyebrow">PAYMENT SUMMARY</p>
-          <h1>Fee receipt</h1>
-          <p>Review the amount due before uploading your payment documents.</p>
+          <h1>Your fee receipt</h1>
+          <p>This is exactly what you need to pay. Pay it, then upload your proof on the next step.</p>
+          <div className="receipt-tags">
+            <TagLabel kind="room" value={booking.room_type} size={15} />
+            <TagLabel kind="ac" value={isAc ? "AC" : "Non-AC"} size={15} />
+            <TagLabel kind="bed" value={booking.bed_level} text={`${booking.bed_level} bed`} size={15} />
+            {Boolean(Number(booking.near_window)) && (
+              <span className="tag-label"><Icon name="sun" size={15} /><span>Window side</span></span>
+            )}
+          </div>
         </div>
-        <span className="receipt-number">Room 101 • Bed 1</span>
+        <span className="receipt-number">Room {booking.room_number} • Bed {booking.bed_number}</span>
       </section>
 
       <section className="hold-countdown">
@@ -1528,24 +1995,24 @@ function FeeReceipt({ onNext }: { onNext: () => void }) {
           <Icon name="clock" size={25} />
         </span>
         <div>
-          <p>Your bed is held for</p>
+          <p>Your bed is reserved for</p>
           <strong>{countdown}</strong>
         </div>
-        <small>Complete payment before the timer expires</small>
+        <small>Pay the fee and upload both documents before time runs out</small>
       </section>
 
       <section className="receipt-card">
         <div className="receipt-header">
           <div>
-            <p className="card-label">JKLU HOSTEL BOOKING</p>
+            <p className="card-label">{receipt?.receipt_no || "JKLU HOSTEL BOOKING"}</p>
             <h2>Fee breakdown</h2>
           </div>
-          <span>2025–26</span>
+          <span>2026–27</span>
         </div>
 
         <div className="receipt-lines">
-          {feeItems.map((item) => (
-            <div className="receipt-line" key={item.item_type}>
+          {items.map((item) => (
+            <div className="receipt-line" key={item.item_type + item.description}>
               <div>
                 <span className="item-code">{item.item_type}</span>
                 <p>{item.description}</p>
@@ -1553,25 +2020,12 @@ function FeeReceipt({ onNext }: { onNext: () => void }) {
               {item.item_type === "WINDOW_PREFERENCE" && (
                 <em className="preference-tag">Preference</em>
               )}
-              <strong>{formatMoney(item.amount)}</strong>
+              <strong>{formatMoney(Number(item.amount))}</strong>
             </div>
           ))}
-          {transport !== "none" && (
-            <div className="receipt-line transport-line">
-              <div>
-                <span className="item-code">TRANSPORT</span>
-                <p>
-                  {transport === "semester"
-                    ? "Transport — per semester"
-                    : "Transport — yearly"}
-                </p>
-              </div>
-              <strong>{formatMoney(transportAmount)}</strong>
-            </div>
-          )}
         </div>
 
-        <fieldset className="transport-options">
+        <fieldset className="transport-options" disabled={busy}>
           <legend>Transport option</legend>
           {[
             { value: "none", label: "None", price: "No transport" },
@@ -1584,7 +2038,7 @@ function FeeReceipt({ onNext }: { onNext: () => void }) {
                 name="transport"
                 value={option.value}
                 checked={transport === option.value}
-                onChange={() => setTransport(option.value as TransportChoice)}
+                onChange={() => changeTransport(option.value as TransportChoice)}
               />
               <span className="radio-dot" />
               <span>
@@ -1602,103 +2056,183 @@ function FeeReceipt({ onNext }: { onNext: () => void }) {
       </section>
 
       <div className="receipt-action">
-        <p>Payment is completed outside this prototype.</p>
-        <PrimaryButton onClick={onNext}>Next: Upload documents</PrimaryButton>
+        <p>You pay outside this app, then upload your proof.</p>
+        <PrimaryButton onClick={onNext} disabled={busy || !receipt}>Next: upload my documents</PrimaryButton>
       </div>
+      {error && <ErrorToast message={error} onClose={() => setError("")} />}
     </main>
   );
 }
 
 function UploadCard({
   title,
-  file,
-  onFile,
+  uploadedName,
+  uploading,
+  onPick,
 }: {
   title: string;
-  file: File | null;
-  onFile: (file: File | null) => void;
+  uploadedName: string | null;
+  uploading: boolean;
+  onPick: (file: File) => void;
 }) {
-  const [error, setError] = useState("");
   const inputId = title.toLowerCase().replaceAll(" ", "-");
-
-  const validateFile = (nextFile?: File) => {
-    if (!nextFile) return;
-    const allowed = ["application/pdf", "image/jpeg", "image/png"];
-    if (!allowed.includes(nextFile.type) || nextFile.size > 5 * 1024 * 1024) {
-      setError("Use a PDF, JPG, or PNG file up to 5 MB.");
-      return;
-    }
-    setError("");
-    onFile(nextFile);
-  };
+  const chip = uploading ? "Uploading..." : uploadedName ? "Uploaded" : "Missing";
 
   return (
     <div
-      className={`upload-card ${file ? "uploaded" : ""}`}
+      className={`upload-card ${uploadedName ? "uploaded" : ""}`}
       onDragOver={(event) => event.preventDefault()}
       onDrop={(event) => {
         event.preventDefault();
-        validateFile(event.dataTransfer.files[0]);
+        const dropped = event.dataTransfer.files[0];
+        if (dropped) onPick(dropped);
       }}
     >
       <div className="upload-title">
         <span className="upload-icon">
-          <Icon name={file ? "file" : "upload"} size={22} />
+          <Icon name={uploadedName ? "file" : "upload"} size={22} />
         </span>
         <div>
           <h3>{title}</h3>
-          <p>Required document</p>
+          <p>Required</p>
         </div>
-        <span className={`document-chip ${file ? "verified" : "pending"}`}>
-          {file ? "Ready" : "Missing"}
-        </span>
+        <span className={`document-chip ${uploadedName ? "verified" : "pending"}`}>{chip}</span>
       </div>
       <label htmlFor={inputId} className="drop-zone">
         <input
           id={inputId}
           type="file"
           accept=".pdf,.jpg,.jpeg,.png"
-          onChange={(event) => validateFile(event.target.files?.[0])}
+          disabled={uploading}
+          onChange={(event) => {
+            const picked = event.target.files?.[0];
+            if (picked) onPick(picked);
+            event.target.value = "";
+          }}
         />
-        {file ? (
+        {uploadedName ? (
           <>
             <Icon name="circleCheck" size={24} />
-            <strong>{file.name}</strong>
+            <strong>{uploadedName}</strong>
             <span>Click or drop another file to replace</span>
           </>
         ) : (
           <>
             <Icon name="upload" size={24} />
-            <strong>Drop your file here or browse</strong>
+            <strong>Drop your file here, or tap to browse</strong>
             <span>PDF, JPG or PNG • Maximum 5 MB</span>
           </>
         )}
       </label>
-      {error && <ErrorToast message={error} onClose={() => setError("")} />}
     </div>
   );
 }
 
-function UploadDocuments({ onSubmit }: { onSubmit: () => void }) {
-  const [receiptFile, setReceiptFile] = useState<File | null>(null);
-  const [allotmentFile, setAllotmentFile] = useState<File | null>(null);
+function UploadDocuments({ onSubmit, onGo }: { onSubmit: () => void; onGo: (screen: Screen) => void; onBack: () => void }) {
+  const [loaded, setLoaded] = useState(false);
+  const [booking, setBooking] = useState<any>(null);
+  const [names, setNames] = useState<Record<string, string | null>>({ PAYMENT_RECEIPT: null, ALLOTMENT_FORM: null });
+  const [uploading, setUploading] = useState<string | null>(null);
   const [paymentMode, setPaymentMode] = useState("UPI");
   const [reference, setReference] = useState("");
-  const [amount, setAmount] = useState("96750");
+  const [amount, setAmount] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const data = await loadBooking();
+        if (!alive) return;
+        const b = data?.booking;
+        if (b && (b.status === "Pending" || b.status === "Approved")) {
+          onGo("booking-status");
+          return;
+        }
+        setBooking(b || null);
+        if (b?.status === "Held") {
+          rememberBooking(Number(b.booking_id));
+          const found: Record<string, string | null> = { PAYMENT_RECEIPT: null, ALLOTMENT_FORM: null };
+          (data?.documents || []).forEach((d: any) => { found[d.doc_type] = d.file_name; });
+          setNames(found);
+          if (data?.receipt?.total_amount) setAmount(String(Number(data.receipt.total_amount)));
+        }
+      } catch (err: any) {
+        if (alive) setError(err.message);
+      } finally {
+        if (alive) setLoaded(true);
+      }
+    })();
+    return () => { alive = false; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const pick = async (docType: string, file: File) => {
+    if (!booking) return;
+    setUploading(docType);
+    try {
+      await uploadDocumentFile(Number(booking.booking_id), docType, file);
+      setNames((current) => ({ ...current, [docType]: file.name }));
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setUploading(null);
+    }
+  };
+
+  const submit = async () => {
+    if (!booking || submitting) return;
+    setSubmitting(true);
+    try {
+      await apiRequest(`/student/bookings/${booking.booking_id}/submit`, "POST", {
+        payment_mode: paymentMode,
+        payment_reference: reference.trim(),
+        amount_paid: Number(amount),
+      });
+      onSubmit();
+    } catch (err: any) {
+      setError(err.message);
+      setSubmitting(false);
+    }
+  };
+
+  if (!loaded) return <ScreenSkeleton />;
+
+  if (!booking || booking.status !== "Held") {
+    return (
+      <main className="page-shell documents-page">
+        <div className="state-message expired">
+          <Icon name="clock" size={20} />
+          <div>
+            <strong>Hold expired, pick again</strong>
+            <p>You have no bed on hold right now. Choose a bed to continue.</p>
+          </div>
+        </div>
+        <div className="receipt-action">
+          <p>Your preferences are saved.</p>
+          <PrimaryButton onClick={() => onGo("choose-room")}>Choose a bed again</PrimaryButton>
+        </div>
+        {error && <ErrorToast message={error} onClose={() => setError("")} />}
+      </main>
+    );
+  }
+
   const missing = [
-    !receiptFile && "payment receipt",
-    !allotmentFile && "allotment form",
+    !names.PAYMENT_RECEIPT && "payment receipt",
+    !names.ALLOTMENT_FORM && "allotment form",
     !reference.trim() && "payment reference number",
+    !(Number(amount) > 0) && "amount paid",
   ].filter(Boolean) as string[];
-  const canSubmit = missing.length === 0;
+  const canSubmit = missing.length === 0 && !uploading && !submitting;
 
   return (
     <main className="page-shell documents-page">
       <section className="page-heading">
         <div>
           <p className="eyebrow">DOCUMENTS • STEP 4 OF 5</p>
-          <h1>Upload & submit</h1>
-          <p>Upload clear copies so the warden can verify your booking.</p>
+          <h1>Upload your documents</h1>
+          <p>Clear, readable copies help the warden approve your booking faster.</p>
         </div>
         <span className="completion-badge">2 required items</span>
       </section>
@@ -1707,20 +2241,22 @@ function UploadDocuments({ onSubmit }: { onSubmit: () => void }) {
         <div className="checklist-heading">
           <span>01</span>
           <div>
-            <h2>Required documents</h2>
-            <p>Both files must be uploaded before submission.</p>
+            <h2>Your two documents</h2>
+            <p>Both files are needed before you can submit.</p>
           </div>
         </div>
         <div className="upload-grid">
           <UploadCard
             title="Hostel fee payment receipt"
-            file={receiptFile}
-            onFile={setReceiptFile}
+            uploadedName={names.PAYMENT_RECEIPT}
+            uploading={uploading === "PAYMENT_RECEIPT"}
+            onPick={(file) => pick("PAYMENT_RECEIPT", file)}
           />
           <UploadCard
             title="Hostel allotment form"
-            file={allotmentFile}
-            onFile={setAllotmentFile}
+            uploadedName={names.ALLOTMENT_FORM}
+            uploading={uploading === "ALLOTMENT_FORM"}
+            onPick={(file) => pick("ALLOTMENT_FORM", file)}
           />
         </div>
       </section>
@@ -1729,8 +2265,8 @@ function UploadDocuments({ onSubmit }: { onSubmit: () => void }) {
         <div className="checklist-heading">
           <span>02</span>
           <div>
-            <h2>Payment details</h2>
-            <p>Enter the details exactly as shown on your receipt.</p>
+            <h2>About your payment</h2>
+            <p>Copy these details exactly as they appear on your receipt.</p>
           </div>
         </div>
         <div className="payment-fields">
@@ -1771,18 +2307,32 @@ function UploadDocuments({ onSubmit }: { onSubmit: () => void }) {
           <p>
             {canSubmit
               ? "Everything is ready for submission."
-              : `Still needed: ${missing.join(", ")}.`}
+              : uploading
+                ? "Uploading your file..."
+                : `Still needed: ${missing.join(", ")}.`}
           </p>
         </div>
-        <PrimaryButton disabled={!canSubmit} onClick={onSubmit}>
-          Submit for warden approval
+        <PrimaryButton disabled={!canSubmit} onClick={submit}>
+          {submitting ? "Submitting..." : "Submit for warden approval"}
         </PrimaryButton>
       </div>
+      {error && <ErrorToast message={error} onClose={() => setError("")} />}
     </main>
   );
 }
 
 function SubmittedConfirmation({ onTrack }: { onTrack: () => void }) {
+  const [receiptNo, setReceiptNo] = useState("");
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let alive = true;
+    loadBooking()
+      .then((data) => { if (alive) setReceiptNo(data?.receipt?.receipt_no || data?.booking?.receipt_no || ""); })
+      .catch((err) => { if (alive) setError(err.message); });
+    return () => { alive = false; };
+  }, []);
+
   return (
     <main className="confirmation-page">
       <section className="confirmation-card">
@@ -1794,11 +2344,11 @@ function SubmittedConfirmation({ onTrack }: { onTrack: () => void }) {
         <p className="eyebrow">SUBMISSION COMPLETE</p>
         <h1>Your documents are with the warden</h1>
         <p>
-          We’ll update your booking as soon as both documents have been reviewed.
+          Relax for now. Your booking updates here as soon as both documents are checked.
         </p>
         <div className="confirmation-receipt">
           <span>Receipt number</span>
-          <strong>RCPT-20261005-00001</strong>
+          <strong>{receiptNo || "..."}</strong>
         </div>
         <span className="waiting-chip">
           <i />
@@ -1806,30 +2356,15 @@ function SubmittedConfirmation({ onTrack }: { onTrack: () => void }) {
         </span>
         <PrimaryButton onClick={onTrack}>Track my booking</PrimaryButton>
       </section>
+      {error && <ErrorToast message={error} onClose={() => setError("")} />}
     </main>
   );
 }
 
-const bookingDocuments: BookingDocument[] = [
-  {
-    doc_id: 1,
-    doc_type: "PAYMENT_RECEIPT",
-    file_name: "hostel-fee-receipt.pdf",
-    verification_status: "Pending",
-    remarks: "",
-  },
-  {
-    doc_id: 2,
-    doc_type: "ALLOTMENT_FORM",
-    file_name: "hostel-allotment-form.pdf",
-    verification_status: "Pending",
-    remarks: "",
-  },
-];
-
 function StatusTracker({ state }: { state: BookingState }) {
   const steps = ["Profile", "Roommate Preferences", "Choose Room", "Documents", "Warden Approval"];
-  const current = state === "Approved" ? 5 : 4;
+  const current =
+    state === "Approved" ? 5 : state === "Held" || state === "Pending" ? 4 : 3;
   return (
     <section className="status-tracker">
       <div className="status-progress">
@@ -1858,49 +2393,106 @@ function MatchRing({ score }: { score: number }) {
   );
 }
 
-function BookingStatus() {
-  const [state, setState] = useState<BookingState>("Pending");
-  const documents: BookingDocument[] = bookingDocuments.map((document, index) => {
-    if (state === "Approved") return { ...document, verification_status: "Verified" };
-    if (state === "Rejected" && index === 0)
-      return { ...document, verification_status: "Verified" };
-    if (state === "Rejected" && index === 1)
-      return {
-        ...document,
-        verification_status: "Rejected",
-        remarks: "The student signature is missing on page 2. Please sign and upload again.",
-      };
-    return document;
+function BookingStatus({ onGo }: { onGo: (screen: Screen) => void; onBack: () => void }) {
+  const [data, setData] = useState<BookingData>(null);
+  const [loaded, setLoaded] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [reuploadType, setReuploadType] = useState<string | null>(null);
+  const fileInput = useRef<HTMLInputElement>(null);
+
+  const refresh = async () => {
+    try {
+      setData(await loadBooking());
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setLoaded(true);
+    }
+  };
+
+  useEffect(() => { refresh(); }, []);
+
+  if (!loaded) return <ScreenSkeleton />;
+
+  const booking = data?.booking;
+  if (!booking) {
+    return (
+      <main className="page-shell booking-status-page">
+        <EmptyState title="No booking yet" message="Once you hold a bed, you can follow it here." />
+        <div className="receipt-action">
+          <p>Start with your preferences, then pick a bed.</p>
+          <PrimaryButton onClick={() => onGo("home")}>Back to my dashboard</PrimaryButton>
+        </div>
+        {error && <ErrorToast message={error} onClose={() => setError("")} />}
+      </main>
+    );
+  }
+
+  const state = booking.status as BookingState;
+  const editable = state === "Held" || state === "Pending";
+  const isAc = Boolean(Number(booking.is_ac));
+  const documents = ["PAYMENT_RECEIPT", "ALLOTMENT_FORM"].map((type) => {
+    const found = (data?.documents || []).find((d: any) => d.doc_type === type);
+    return found || { doc_id: type, doc_type: type, file_name: "", verification_status: "Missing", remarks: "" };
   });
+
+  const cancelBooking = async () => {
+    if (!window.confirm("Cancel this booking? Your bed will be released.")) return;
+    setBusy(true);
+    try {
+      await apiRequest(`/student/bookings/${booking.booking_id}/cancel`, "POST");
+      await refresh();
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const reupload = async (file: File | undefined) => {
+    if (!file || !reuploadType) return;
+    setBusy(true);
+    try {
+      await uploadDocumentFile(Number(booking.booking_id), reuploadType, file);
+      await refresh();
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+      setReuploadType(null);
+    }
+  };
 
   return (
     <main className="page-shell booking-status-page">
       <section className="page-heading status-heading">
         <div>
-          <p className="eyebrow">BOOKING RCPT-20261005-00001</p>
-          <h1>Booking status</h1>
-          <p>Track your room and document verification in one place.</p>
+          <p className="eyebrow">{booking.receipt_no ? `RECEIPT ${booking.receipt_no}` : `BOOKING #${booking.booking_id}`}</p>
+          <h1>Where your booking stands</h1>
+          <p>See your bed, your documents and the warden’s decision in one place.</p>
         </div>
         <span className={`booking-state ${state.toLowerCase()}`}>{state}</span>
       </section>
 
-      <div className="prototype-state">
-        <span>Prototype state</span>
-        {(["Pending", "Approved", "Rejected", "Expired"] as BookingState[]).map((item) => (
-          <button className={state === item ? "active" : ""} onClick={() => setState(item)} key={item}>
-            {item}
-          </button>
-        ))}
-      </div>
-
       <StatusTracker state={state} />
 
+      {state === "Held" && (
+        <div className="state-message">
+          <Icon name="clock" size={20} />
+          <div>
+            <strong>Your bed is on hold</strong>
+            <p>Upload both documents and submit before the hold ends.</p>
+          </div>
+          <button className="inline-action" onClick={() => onGo("fee-receipt")}>Continue to payment</button>
+        </div>
+      )}
       {state === "Rejected" && (
         <div className="state-message rejected">
           <Icon name="alert" size={20} />
           <div>
-            <strong>Your documents need attention</strong>
-            <p>Review the warden’s remark and re-upload the rejected document.</p>
+            <strong>Your booking was not approved</strong>
+            <p>{booking.remarks ? `Warden’s note: ${booking.remarks}` : "Please choose a bed again."}</p>
           </div>
         </div>
       )}
@@ -1908,8 +2500,26 @@ function BookingStatus() {
         <div className="state-message expired">
           <Icon name="clock" size={20} />
           <div>
-            <strong>This booking has expired</strong>
-            <p>The payment or document deadline passed. Start a new room selection to continue.</p>
+            <strong>Your hold ran out</strong>
+            <p>The bed was released because time ran out. Pick a bed again to continue.</p>
+          </div>
+        </div>
+      )}
+      {state === "Cancelled" && (
+        <div className="state-message expired">
+          <Icon name="alert" size={20} />
+          <div>
+            <strong>This booking was cancelled</strong>
+            <p>Your bed has been released. You can pick a new one any time.</p>
+          </div>
+        </div>
+      )}
+      {state === "Pending" && documents.some((d: any) => d.verification_status === "Rejected") && (
+        <div className="state-message rejected">
+          <Icon name="alert" size={20} />
+          <div>
+            <strong>One document needs a fix</strong>
+            <p>Read the warden’s note below and upload that document again.</p>
           </div>
         </div>
       )}
@@ -1926,12 +2536,12 @@ function BookingStatus() {
             </div>
           </div>
           <dl className="booking-details">
-            <div><dt>Hostel</dt><dd>Boys Hostel A</dd></div>
-            <div><dt>Floor</dt><dd>Floor 1</dd></div>
-            <div><dt>Room</dt><dd>101 • Quad AC</dd></div>
-            <div><dt>Bed</dt><dd>Bed 1</dd></div>
-            <div><dt>Level</dt><dd>Lower</dd></div>
-            <div><dt>Window</dt><dd>Yes</dd></div>
+            <div><dt>Hostel</dt><dd>{booking.hostel_name}</dd></div>
+            <div><dt>Floor</dt><dd>Floor {booking.floor_number}</dd></div>
+            <div><dt>Room</dt><dd>{booking.room_number} <TagLabel kind="room" value={booking.room_type} size={15} /> <TagLabel kind="ac" value={isAc ? "AC" : "Non-AC"} size={15} /></dd></div>
+            <div><dt>Bed</dt><dd>Bed {booking.bed_number}</dd></div>
+            <div><dt>Level</dt><dd><TagLabel kind="bed" value={booking.bed_level} size={15} /></dd></div>
+            <div><dt>Window</dt><dd><span className="tag-label"><Icon name="sun" size={15} /><span>{Number(booking.near_window) ? "Yes" : "No"}</span></span></dd></div>
           </dl>
         </section>
 
@@ -1946,17 +2556,13 @@ function BookingStatus() {
             </div>
           </div>
           <div className="status-documents">
-            {documents.map((document) => (
+            {documents.map((document: any) => (
               <div className="status-document" key={document.doc_id}>
                 <span className="file-square"><Icon name="file" size={20} /></span>
                 <div>
-                  <strong>
-                    {document.doc_type === "PAYMENT_RECEIPT"
-                      ? "Hostel fee payment receipt"
-                      : "Hostel allotment form"}
-                  </strong>
-                  <p>{document.file_name}</p>
-                  {document.verification_status === "Rejected" && (
+                  <strong>{DOC_LABELS[document.doc_type]}</strong>
+                  <p>{document.file_name || "Not uploaded yet"}</p>
+                  {document.verification_status === "Rejected" && document.remarks && (
                     <div className="warden-remark">
                       <b>Warden’s remark</b>
                       <span>{document.remarks}</span>
@@ -1964,16 +2570,34 @@ function BookingStatus() {
                   )}
                 </div>
                 <div className="document-actions">
-                  <span className={`document-chip ${document.verification_status.toLowerCase()}`}>
-                    {document.verification_status}
+                  <span className={`document-chip ${document.verification_status === "Missing" ? "pending" : document.verification_status.toLowerCase()}`}>
+                    {document.verification_status === "Missing" ? "Not uploaded" : document.verification_status}
                   </span>
-                  {document.verification_status === "Rejected" && (
-                    <button>Re-upload</button>
+                  {document.verification_status === "Rejected" && editable && (
+                    <button
+                      disabled={busy}
+                      onClick={() => {
+                        setReuploadType(document.doc_type);
+                        window.setTimeout(() => fileInput.current?.click(), 0);
+                      }}
+                    >
+                      Re-upload
+                    </button>
                   )}
                 </div>
               </div>
             ))}
           </div>
+          <input
+            ref={fileInput}
+            type="file"
+            accept=".pdf,.jpg,.jpeg,.png"
+            style={{ display: "none" }}
+            onChange={(event) => {
+              reupload(event.target.files?.[0]);
+              event.target.value = "";
+            }}
+          />
         </section>
       </div>
 
@@ -1981,136 +2605,190 @@ function BookingStatus() {
         <section className="roommates-section">
           <div className="roommates-heading">
             <div>
-              <p className="card-label">ROOM 101</p>
+              <p className="card-label">ROOM {booking.room_number}</p>
               <h2>Your roommates</h2>
             </div>
             <span>Booking approved</span>
           </div>
-          <div className="roommate-grid">
-            {[
-              { name: "Arjun Mehta", course: "B.Tech CSE", bed: "Bed 2 • Upper", score: 90 },
-              { name: "Kabir Sharma", course: "B.Tech AI", bed: "Bed 3 • Lower", score: 84 },
-              { name: "Dev Malhotra", course: "B.Des", bed: "Bed 4 • Upper", score: 76 },
-            ].map((roommate) => (
-              <article className="roommate-card" key={roommate.name}>
-                <span className="roommate-avatar">
-                  {roommate.name.split(" ").map((part) => part[0]).join("")}
-                </span>
-                <div>
-                  <h3>{roommate.name}</h3>
-                  <p>{roommate.course}</p>
-                  <span>{roommate.bed}</span>
-                </div>
-                <MatchRing score={roommate.score} />
-              </article>
-            ))}
-          </div>
+          {(data?.roommates || []).length === 0 ? (
+            <EmptyState title="No roommates yet" message="Your roommates will appear here once they are approved too." />
+          ) : (
+            <div className="roommate-grid">
+              {(data?.roommates || []).map((roommate: any) => (
+                <article className="roommate-card" key={roommate.student_id}>
+                  <span className="roommate-avatar">
+                    {String(roommate.name).split(" ").map((part: string) => part[0]).join("").slice(0, 2)}
+                  </span>
+                  <div>
+                    <h3>{roommate.name}</h3>
+                    <p>{roommate.course}</p>
+                    <span>Bed {roommate.bed_number} • {roommate.bed_level}</span>
+                  </div>
+                  <MatchRing score={Math.round(Number(roommate.match_score) || 0)} />
+                </article>
+              ))}
+            </div>
+          )}
         </section>
       )}
 
-      {state === "Pending" && <button className="cancel-booking">Cancel booking</button>}
+      {editable && (
+        <button className="cancel-booking" disabled={busy} onClick={cancelBooking}>
+          Cancel booking
+        </button>
+      )}
+      {(state === "Rejected" || state === "Expired" || state === "Cancelled") && (
+        <div className="receipt-action">
+          <p>Ready to try again?</p>
+          <PrimaryButton onClick={() => onGo("choose-room")}>Choose a room again</PrimaryButton>
+        </div>
+      )}
+      {error && <ErrorToast message={error} onClose={() => setError("")} />}
     </main>
   );
 }
 
-const wardenBookings: WardenBooking[] = [
-  {
-    booking_id: "BKG-2026-0105",
-    student_name: "Rohan Sharma",
-    course: "B.Tech CSE",
-    floor_number: 1,
-    room_number: "101",
-    bed_number: 1,
-    bed_level: "Lower",
-    near_window: true,
-    total_amount: 96750,
-    docs_uploaded: 2,
-    docs_verified: 1,
-    status: "Pending",
-  },
-  {
-    booking_id: "BKG-2026-0112",
-    student_name: "Aarav Mehta",
-    course: "B.Tech AI",
-    floor_number: 3,
-    room_number: "307",
-    bed_number: 2,
-    bed_level: "Upper",
-    near_window: false,
-    total_amount: 84250,
-    docs_uploaded: 2,
-    docs_verified: 2,
-    status: "Pending",
-  },
-  {
-    booking_id: "BKG-2026-0118",
-    student_name: "Vihaan Gupta",
-    course: "BBA",
-    floor_number: 5,
-    room_number: "514",
-    bed_number: 1,
-    bed_level: "Single",
-    near_window: true,
-    total_amount: 96750,
-    docs_uploaded: 2,
-    docs_verified: 0,
-    status: "Pending",
-  },
-  {
-    booking_id: "BKG-2026-0124",
-    student_name: "Aditya Kapoor",
-    course: "B.Des",
-    floor_number: 8,
-    room_number: "806",
-    bed_number: 4,
-    bed_level: "Upper",
-    near_window: false,
-    total_amount: 84250,
-    docs_uploaded: 2,
-    docs_verified: 1,
-    status: "Pending",
-  },
-];
+const greetingForNow = () => {
+  const hour = new Date().getHours();
+  return hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
+};
 
-const occupancyByFloor = [
-  { floor: 1, booked: 48, progress: 10, available: 18, blocked: 4 },
-  { floor: 2, booked: 44, progress: 8, available: 24, blocked: 4 },
-  { floor: 3, booked: 52, progress: 9, available: 16, blocked: 3 },
-  { floor: 4, booked: 39, progress: 12, available: 26, blocked: 3 },
-  { floor: 5, booked: 46, progress: 7, available: 22, blocked: 5 },
-  { floor: 6, booked: 35, progress: 11, available: 30, blocked: 4 },
-  { floor: 7, booked: 41, progress: 9, available: 27, blocked: 3 },
-  { floor: 8, booked: 29, progress: 8, available: 39, blocked: 4 },
-];
-
-function WardenDashboard({ onOpen }: { onOpen: (booking: WardenBooking) => void }) {
+function WardenDashboard({
+  onOpen,
+  notice,
+  onDismissNotice,
+}: {
+  onOpen: (bookingId: number) => void;
+  notice: string;
+  onDismissNotice: () => void;
+}) {
   const [search, setSearch] = useState("");
-  const [blockFloor, setBlockFloor] = useState("1");
-  const [blockRoom, setBlockRoom] = useState("101");
-  const [blockBed, setBlockBed] = useState("1");
-  const [blocked, setBlocked] = useState(false);
-  const filteredBookings = wardenBookings.filter((booking) =>
+  const [pending, setPending] = useState<WardenBooking[]>([]);
+  const [approvedCount, setApprovedCount] = useState(0);
+  const [occupancy, setOccupancy] = useState<any[]>([]);
+  const [beds, setBeds] = useState<any[]>([]);
+  const [loaded, setLoaded] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [blockFloor, setBlockFloor] = useState("");
+  const [blockRoom, setBlockRoom] = useState("");
+  const [blockBed, setBlockBed] = useState("");
+  const wardenName = getUser()?.name || "";
+
+  const refresh = async () => {
+    // Load each part on its own, so one failing call never hides the pending bookings
+    const results = await Promise.allSettled([
+      apiRequest("/warden/bookings?status=Pending", "GET"),
+      apiRequest("/warden/bookings?status=Approved", "GET"),
+      apiRequest("/warden/occupancy", "GET"),
+      apiRequest("/warden/beds", "GET"),
+    ]);
+    const [pendingRes, approvedRes, occupancyRes, bedsRes] = results;
+    if (pendingRes.status === "fulfilled") {
+      setPending(
+        pendingRes.value.map((b: any) => ({
+          ...b,
+          near_window: Boolean(Number(b.near_window)),
+          is_ac: Boolean(Number(b.is_ac)),
+          total_amount: Number(b.total_amount || 0),
+          docs_uploaded: Number(b.docs_uploaded),
+          docs_verified: Number(b.docs_verified),
+        })),
+      );
+    }
+    if (approvedRes.status === "fulfilled") setApprovedCount(approvedRes.value.length);
+    if (occupancyRes.status === "fulfilled") {
+      setOccupancy(
+        occupancyRes.value.map((o: any) => ({
+          floor: Number(o.floor_number),
+          booked: Number(o.booked),
+          progress: Number(o.in_progress),
+          available: Number(o.available),
+          blocked: Number(o.blocked),
+        })),
+      );
+    }
+    if (bedsRes.status === "fulfilled") setBeds(bedsRes.value);
+    const failed = results.find((r) => r.status === "rejected") as PromiseRejectedResult | undefined;
+    if (failed) setError(failed.reason?.message || "Something went wrong");
+    setLoaded(true);
+  };
+
+  useEffect(() => { refresh(); }, []);
+
+  // Block tool: floors -> rooms -> beds, all from the hostel's real beds
+  const floorOptions = Array.from(new Set(beds.map((b) => b.floor_number))) as number[];
+  const roomOptions = Array.from(
+    new Set(beds.filter((b) => String(b.floor_number) === blockFloor).map((b) => b.room_number)),
+  ) as string[];
+  const bedOptions = beds.filter(
+    (b) => String(b.floor_number) === blockFloor && b.room_number === blockRoom,
+  );
+
+  useEffect(() => {
+    if (beds.length && !blockFloor) setBlockFloor(String(beds[0].floor_number));
+  }, [beds, blockFloor]);
+  useEffect(() => {
+    if (roomOptions.length && !roomOptions.includes(blockRoom)) setBlockRoom(roomOptions[0]);
+  }, [blockFloor, beds]);
+  useEffect(() => {
+    if (bedOptions.length && !bedOptions.some((b) => String(b.bed_number) === blockBed)) {
+      setBlockBed(String(bedOptions[0].bed_number));
+    }
+  }, [blockRoom, blockFloor, beds]);
+
+  const selectedBed = bedOptions.find((b) => String(b.bed_number) === blockBed);
+  const isBlocked = selectedBed?.bed_status === "Blocked";
+  const inUse = selectedBed && ["Held", "Pending", "Booked"].includes(selectedBed.bed_status);
+
+  const toggleBlock = async (blocked: boolean) => {
+    if (!selectedBed || busy) return;
+    setBusy(true);
+    try {
+      await apiRequest(`/warden/beds/${selectedBed.bed_id}/block`, "PUT", { blocked });
+      await refresh();
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const filteredBookings = pending.filter((booking) =>
     `${booking.student_name} ${booking.course} ${booking.room_number} ${booking.booking_id}`
       .toLowerCase()
       .includes(search.toLowerCase()),
   );
+  const totalBeds = beds.length || 1;
+  const freeBeds = occupancy.reduce((sum, o) => sum + o.available, 0);
+  const blockedBeds = occupancy.reduce((sum, o) => sum + o.blocked, 0);
   const wardenStats = [
-    { label: "Pending requests", value: "12", icon: "clipboard", theme: "orange" },
-    { label: "Approved", value: "186", icon: "circleCheck", theme: "green" },
-    { label: "Free beds", value: "480", icon: "bed", theme: "purple" },
-    { label: "Blocked beds", value: "30", icon: "alert", theme: "red" },
+    { label: "Pending requests", value: pending.length, fill: pending.length / Math.max(1, pending.length + approvedCount), icon: "clipboard", theme: "orange" },
+    { label: "Approved", value: approvedCount, fill: approvedCount / totalBeds, icon: "circleCheck", theme: "green" },
+    { label: "Free beds", value: freeBeds, fill: freeBeds / totalBeds, icon: "bed", theme: "purple" },
+    { label: "Blocked beds", value: blockedBeds, fill: blockedBeds / totalBeds, icon: "alert", theme: "red" },
   ];
+
+  if (!loaded) return <ScreenSkeleton />;
 
   return (
     <main className="page-shell warden-page">
       <section className="page-heading">
         <div>
-          <p className="eyebrow">WARDEN VIEW • BOYS HOSTEL A</p>
-          <h1>Good morning, Mr. Verma</h1>
-          <p>Review bookings, verify documents, and manage hostel occupancy.</p>
+          <p className="eyebrow">WARDEN VIEW • {beds[0]?.hostel_name?.toUpperCase() || "YOUR HOSTEL"}</p>
+          <h1>{greetingForNow()}{wardenName ? `, ${wardenName}` : ""}</h1>
+          <p>Check documents, approve bookings and keep an eye on your hostel.</p>
         </div>
         <span className="session-pill"><span />Admissions active</span>
       </section>
+
+      {notice && (
+        <div className="notice-banner" role="status">
+          <Icon name="circleCheck" size={18} />
+          <span>{notice}</span>
+          <button onClick={onDismissNotice} aria-label="Dismiss">×</button>
+        </div>
+      )}
 
       <section className="stats-grid warden-stats" aria-label="Hostel overview">
         {wardenStats.map((stat) => (
@@ -2120,7 +2798,7 @@ function WardenDashboard({ onOpen }: { onOpen: (booking: WardenBooking) => void 
               <p>{stat.label}</p>
               <strong>{stat.value}</strong>
             </div>
-            <div className="mini-progress"><span /></div>
+            <div className="mini-progress"><span style={{ width: `${Math.min(100, Math.max(4, stat.fill * 100))}%` }} /></div>
             <small>Updated just now</small>
           </article>
         ))}
@@ -2149,14 +2827,14 @@ function WardenDashboard({ onOpen }: { onOpen: (booking: WardenBooking) => void 
           {filteredBookings.map((booking) => (
             <button
               className="warden-booking-card"
-              onClick={() => onOpen(booking)}
+              onClick={() => onOpen(Number(booking.booking_id))}
               key={booking.booking_id}
             >
               <span className="student-initials">
-                {booking.student_name.split(" ").map((name) => name[0]).join("")}
+                {booking.student_name.split(" ").map((name) => name[0]).join("").slice(0, 2)}
               </span>
               <div className="booking-student">
-                <span>{booking.booking_id}</span>
+                <span>{booking.receipt_no || `#${booking.booking_id}`}</span>
                 <h3>{booking.student_name}</h3>
                 <p>{booking.course}</p>
               </div>
@@ -2166,7 +2844,11 @@ function WardenDashboard({ onOpen }: { onOpen: (booking: WardenBooking) => void 
                   Floor {booking.floor_number} • Room {booking.room_number} • Bed{" "}
                   {booking.bed_number}
                 </strong>
-                <span>{booking.bed_level} level</span>
+                <span className="tag-row">
+                  {booking.room_type && <TagLabel kind="room" value={booking.room_type} size={14} />}
+                  {booking.room_type && <TagLabel kind="ac" value={booking.is_ac ? "AC" : "Non-AC"} size={14} />}
+                  <TagLabel kind="bed" value={booking.bed_level} text={`${booking.bed_level} bed`} size={14} />
+                </span>
               </div>
               <div className="booking-card-chips">
                 {booking.near_window && <span className="window-chip"><Icon name="sun" size={13} />Window</span>}
@@ -2179,8 +2861,12 @@ function WardenDashboard({ onOpen }: { onOpen: (booking: WardenBooking) => void 
           ))}
           {filteredBookings.length === 0 && (
             <EmptyState
-              title="No matching bookings"
-              message="Try another student name, course, room, or booking ID."
+              title={pending.length === 0 ? "No pending bookings" : "Nothing matches your search"}
+              message={
+                pending.length === 0
+                  ? "New requests will show up here as soon as students submit their documents."
+                  : "Try a different name, course, room or booking ID."
+              }
             />
           )}
         </div>
@@ -2201,8 +2887,8 @@ function WardenDashboard({ onOpen }: { onOpen: (booking: WardenBooking) => void 
             <span><i className="blocked" />Blocked</span>
           </div>
           <div className="floor-bars">
-            {occupancyByFloor.map((item) => {
-              const total = item.booked + item.progress + item.available + item.blocked;
+            {occupancy.map((item) => {
+              const total = item.booked + item.progress + item.available + item.blocked || 1;
               return (
                 <div className="floor-bar-row" key={item.floor}>
                   <strong>F{item.floor}</strong>
@@ -2231,93 +2917,152 @@ function WardenDashboard({ onOpen }: { onOpen: (booking: WardenBooking) => void 
             <label>
               <span>Floor</span>
               <select value={blockFloor} onChange={(event) => setBlockFloor(event.target.value)}>
-                {floors.map((floor) => <option key={floor.floor_id}>{floor.floor_number}</option>)}
+                {floorOptions.map((floor) => <option key={floor}>{floor}</option>)}
               </select>
             </label>
             <label>
               <span>Room</span>
               <select value={blockRoom} onChange={(event) => setBlockRoom(event.target.value)}>
-                {rooms.slice(0, 10).map((room) => <option key={room.room_id}>{room.room_number}</option>)}
+                {roomOptions.map((room) => <option key={room}>{room}</option>)}
               </select>
             </label>
             <label>
               <span>Bed</span>
               <select value={blockBed} onChange={(event) => setBlockBed(event.target.value)}>
-                {[1, 2, 3, 4].map((bed) => <option key={bed}>{bed}</option>)}
+                {bedOptions.map((bed) => <option key={bed.bed_id}>{bed.bed_number}</option>)}
               </select>
             </label>
           </div>
           <label className="block-toggle-row">
             <div>
               <strong>Bed {blockBed}, Room {blockRoom}</strong>
-              <small>{blocked ? "Currently blocked" : "Currently available"}</small>
+              <small>
+                {inUse
+                  ? `In use (${selectedBed.bed_status === "Booked" ? "booked" : "being processed"}), cannot be blocked`
+                  : isBlocked
+                    ? "Currently blocked"
+                    : "Currently available"}
+              </small>
             </div>
-            <input type="checkbox" checked={blocked} onChange={(event) => setBlocked(event.target.checked)} />
+            <input
+              type="checkbox"
+              checked={isBlocked}
+              disabled={busy || !selectedBed || Boolean(inUse)}
+              onChange={(event) => toggleBlock(event.target.checked)}
+            />
             <span className="toggle" aria-hidden="true"><span /></span>
           </label>
         </section>
       </div>
+      {error && <ErrorToast message={error} onClose={() => setError("")} />}
     </main>
   );
 }
 
-const freeBedOptions = [
-  { id: "1-104-2", label: "Floor 1 • Room 104 • Bed 2", price: 84250 },
-  { id: "2-211-1", label: "Floor 2 • Room 211 • Bed 1", price: 86750 },
-  { id: "3-307-3", label: "Floor 3 • Room 307 • Bed 3", price: 96750 },
-  { id: "8-806-4", label: "Floor 8 • Room 806 • Bed 4", price: 94250 },
-];
-
 function DocumentReviewCard({
   title,
-  fileName,
-  status,
-  onStatus,
+  doc,
+  canReview,
+  busy,
+  onVerify,
+  onReject,
 }: {
   title: string;
-  fileName: string;
-  status: DocumentStatus;
-  onStatus: (status: DocumentStatus) => void;
+  doc: any | null;
+  canReview: boolean;
+  busy: boolean;
+  onVerify: () => void;
+  onReject: (remarks: string) => void;
 }) {
   const [rejecting, setRejecting] = useState(false);
   const [reason, setReason] = useState("");
+  const [previewUrl, setPreviewUrl] = useState("");
+  const [previewError, setPreviewError] = useState("");
+  const isPdf = /\.pdf$/i.test(doc?.file_name || "");
+
+  useEffect(() => {
+    if (!doc) return;
+    let alive = true;
+    let url = "";
+    fetchFileBlobUrl(`/warden/documents/${doc.doc_id}/file`)
+      .then((blobUrl: string) => {
+        url = blobUrl;
+        if (alive) setPreviewUrl(blobUrl);
+      })
+      .catch((err: any) => { if (alive) setPreviewError(err.message); });
+    return () => {
+      alive = false;
+      if (url) URL.revokeObjectURL(url);
+    };
+  }, [doc?.doc_id, doc?.file_name]);
+
+  if (!doc) {
+    return (
+      <article className="review-document-card">
+        <div className="review-document-header">
+          <div>
+            <h3>{title}</h3>
+            <p>Not uploaded yet</p>
+          </div>
+          <span className="document-chip pending">Missing</span>
+        </div>
+      </article>
+    );
+  }
+
+  const status: string = doc.verification_status;
 
   return (
     <article className="review-document-card">
       <div className="review-document-header">
         <div>
           <h3>{title}</h3>
-          <p>{fileName}</p>
+          <p>{doc.file_name}</p>
         </div>
         <span className={`document-chip ${status.toLowerCase()}`}>{status}</span>
       </div>
       <div className="document-preview">
-        <div className="preview-page">
-          <span className="preview-logo">JKLU</span>
-          <strong>{title}</strong>
-          <i />
-          <i />
-          <i />
-          <i className="short" />
-          <em>Uploaded copy</em>
-        </div>
+        {previewError ? (
+          <p className="preview-note">{previewError}</p>
+        ) : !previewUrl ? (
+          <p className="preview-note">Loading preview...</p>
+        ) : isPdf ? (
+          <iframe src={previewUrl} title={`${title} preview`} />
+        ) : (
+          <img src={previewUrl} alt={`${title} uploaded by the student`} />
+        )}
       </div>
+      {status === "Rejected" && doc.remarks && (
+        <p className="preview-note">Your remark: {doc.remarks}</p>
+      )}
       <div className="document-review-actions">
-        <button className="open-document"><Icon name="file" size={15} />Open full size</button>
-        <div>
-          <button className="verify-document" onClick={() => { onStatus("Verified"); setRejecting(false); }}>
-            <Icon name="check" size={14} />Verify
-          </button>
-          <button className="reject-document" onClick={() => setRejecting(true)}>
-            Reject
-          </button>
-        </div>
+        <button
+          className="open-document"
+          disabled={!previewUrl}
+          onClick={() => window.open(previewUrl, "_blank")}
+        >
+          <Icon name="file" size={15} />Open full size
+        </button>
+        {canReview && (
+          <div>
+            <button
+              className="verify-document"
+              disabled={busy || status === "Verified"}
+              onClick={() => { setRejecting(false); onVerify(); }}
+            >
+              <Icon name="check" size={14} />Verify
+            </button>
+            <button className="reject-document" disabled={busy} onClick={() => setRejecting(true)}>
+              Reject
+            </button>
+          </div>
+        )}
       </div>
       {rejecting && (
         <div className="document-reason">
-          <label htmlFor={`${fileName}-reason`}>Reason for rejection</label>
+          <label htmlFor={`reason-${doc.doc_id}`}>Reason for rejection</label>
           <textarea
-            id={`${fileName}-reason`}
+            id={`reason-${doc.doc_id}`}
             value={reason}
             onChange={(event) => setReason(event.target.value)}
             placeholder="Explain what the student needs to correct..."
@@ -2325,8 +3070,8 @@ function DocumentReviewCard({
           <div>
             <button onClick={() => setRejecting(false)}>Cancel</button>
             <button
-              disabled={!reason.trim()}
-              onClick={() => { onStatus("Rejected"); setRejecting(false); }}
+              disabled={!reason.trim() || busy}
+              onClick={() => { onReject(reason.trim()); setRejecting(false); setReason(""); }}
             >
               Confirm rejection
             </button>
@@ -2338,52 +3083,106 @@ function DocumentReviewCard({
 }
 
 function WardenBookingDetail({
-  booking,
-  onBack,
+  bookingId,
+  onDone,
 }: {
-  booking: WardenBooking;
+  bookingId: number;
+  onDone: (message: string) => void;
   onBack: () => void;
 }) {
-  const [documentStatuses, setDocumentStatuses] = useState<[DocumentStatus, DocumentStatus]>([
-    booking.docs_verified > 0 ? "Verified" : "Pending",
-    booking.docs_verified > 1 ? "Verified" : "Pending",
-  ]);
+  const [detail, setDetail] = useState<any>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
   const [showBookingReject, setShowBookingReject] = useState(false);
   const [bookingRemark, setBookingRemark] = useState("");
   const [showReassign, setShowReassign] = useState(false);
-  const [replacementBed, setReplacementBed] = useState(freeBedOptions[0].id);
-  const bothVerified = documentStatuses.every((status) => status === "Verified");
-  const calculatedTotal = feeItems.reduce((sum, item) => sum + item.amount, 0);
-  const claimedAmount = booking.booking_id === "BKG-2026-0118"
-    ? booking.total_amount - 10000
-    : booking.total_amount;
-  const amountMatches = calculatedTotal === claimedAmount;
-  const replacement = freeBedOptions.find((bed) => bed.id === replacementBed)!;
-  const priceDifference = replacement.price - booking.total_amount;
+  const [freeBeds, setFreeBeds] = useState<any[]>([]);
+  const [replacementBed, setReplacementBed] = useState("");
+  const [reassignRemark, setReassignRemark] = useState("");
 
-  const setDocumentStatus = (index: number, status: DocumentStatus) => {
-    setDocumentStatuses((current) => {
-      const next = [...current] as [DocumentStatus, DocumentStatus];
-      next[index] = status;
-      return next;
-    });
+  const load = async () => {
+    try {
+      setDetail(await apiRequest(`/warden/bookings/${bookingId}`, "GET"));
+    } catch (err: any) {
+      setError(err.message);
+    }
   };
+
+  useEffect(() => { load(); }, [bookingId]);
+
+  const openReassign = async () => {
+    setShowReassign(!showReassign);
+    setShowBookingReject(false);
+    if (freeBeds.length === 0) {
+      try {
+        const rows = await apiRequest("/warden/free-beds", "GET");
+        setFreeBeds(rows);
+        if (rows.length) setReplacementBed(String(rows[0].bed_id));
+      } catch (err: any) {
+        setError(err.message);
+      }
+    }
+  };
+
+  const run = async (action: () => Promise<any>, afterMessage?: string) => {
+    setBusy(true);
+    try {
+      await action();
+      if (afterMessage) onDone(afterMessage);
+      else await load();
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!detail) {
+    return (
+      <>
+        <ScreenSkeleton />
+        {error && <ErrorToast message={error} onClose={() => setError("")} />}
+      </>
+    );
+  }
+
+  const booking = detail.booking;
+  const documents: any[] = detail.documents || [];
+  const docOf = (type: string) => documents.find((d) => d.doc_type === type) || null;
+  const items: any[] = detail.receipt_items || [];
+  const claim = detail.student_payment_claim;
+  const prefs = detail.preferences;
+  const isPending = booking.status === "Pending";
+  const calculatedTotal = items.reduce((sum, item) => sum + Number(item.amount), 0);
+  const amountMatches = claim ? Number(claim.paid_amount) === calculatedTotal : false;
+  const bothVerified =
+    documents.length === 2 && documents.every((d) => d.verification_status === "Verified");
+  const currentTotal = Number(booking.total_amount || calculatedTotal);
+  const replacement = freeBeds.find((bed) => String(bed.bed_id) === replacementBed);
+  const priceDifference = replacement ? Number(replacement.price_total) - currentTotal : 0;
+  const isAc = Boolean(Number(booking.is_ac));
+  const initials = String(booking.student_name).split(" ").map((n: string) => n[0]).join("").slice(0, 2);
 
   return (
     <main className="page-shell warden-detail-page">
-      <button className="back-button" onClick={onBack}>
-        <span>‹</span>Back to pending bookings
-      </button>
       <section className="page-heading warden-detail-heading">
         <div>
-          <p className="eyebrow">WARDEN REVIEW • {booking.booking_id}</p>
+          <p className="eyebrow">WARDEN REVIEW • {booking.receipt_no || `BOOKING #${booking.booking_id}`}</p>
           <h1>{booking.student_name}</h1>
           <p>
             {booking.course} • Floor {booking.floor_number}, Room {booking.room_number}, Bed{" "}
             {booking.bed_number}
           </p>
+          <div className="receipt-tags">
+            <TagLabel kind="room" value={booking.room_type} size={15} />
+            <TagLabel kind="ac" value={isAc ? "AC" : "Non-AC"} size={15} />
+            <TagLabel kind="bed" value={booking.bed_level} text={`${booking.bed_level} bed`} size={15} />
+            {Boolean(Number(booking.near_window)) && (
+              <span className="tag-label"><Icon name="sun" size={15} /><span>Window side</span></span>
+            )}
+          </div>
         </div>
-        <span className="booking-state pending">{booking.status}</span>
+        <span className={`booking-state ${String(booking.status).toLowerCase()}`}>{booking.status}</span>
       </section>
 
       <section className="warden-detail-section student-review">
@@ -2393,23 +3192,29 @@ function WardenBookingDetail({
         </div>
         <div className="student-review-grid">
           <div className="review-student-profile">
-            <span className="student-initials large">
-              {booking.student_name.split(" ").map((name) => name[0]).join("")}
-            </span>
+            <span className="student-initials large">{initials}</span>
             <div>
               <h3>{booking.student_name}</h3>
               <p>{booking.course}</p>
-              <span>{booking.booking_id}</span>
+              <span>{booking.phone}</span>
             </div>
           </div>
           <div className="preference-summary">
-            <div><span>Sleep schedule</span><strong>Flexible</strong></div>
-            <div><span>Cleanliness</span><strong>Average</strong></div>
-            <div><span>Study style</span><strong>Quiet</strong></div>
+            {prefs ? (
+              <>
+                <div><span>Sleep schedule</span><strong>{prefs.sleep_schedule}</strong></div>
+                <div><span>Cleanliness</span><strong>{prefs.cleanliness}</strong></div>
+                <div><span>Study style</span><strong>{prefs.study_style}</strong></div>
+              </>
+            ) : (
+              <div><span>Preferences</span><strong>Not saved yet</strong></div>
+            )}
           </div>
           <div className="review-hobbies">
             <span>Hobbies</span>
-            <div><i>Coding</i><i>Music</i><i>Cricket</i><i>Reading</i></div>
+            <div>
+              {(detail.hobbies || []).length === 0 ? <i>None chosen</i> : detail.hobbies.map((h: string) => <i key={h}>{h}</i>)}
+            </div>
           </div>
         </div>
       </section>
@@ -2422,24 +3227,30 @@ function WardenBookingDetail({
         <div className="payment-comparison">
           <div className="system-receipt">
             <p className="comparison-label">SYSTEM CALCULATION</p>
-            {feeItems.map((item) => (
-              <div key={item.item_type}>
-                <span>{item.description}</span><strong>{formatMoney(item.amount)}</strong>
+            {items.map((item) => (
+              <div key={item.item_type + item.description}>
+                <span>{item.description}</span><strong>{formatMoney(Number(item.amount))}</strong>
               </div>
             ))}
             <div className="comparison-total"><span>Calculated total</span><strong>{formatMoney(calculatedTotal)}</strong></div>
           </div>
           <div className="student-claim">
             <p className="comparison-label">STUDENT’S CLAIM</p>
-            <dl>
-              <div><dt>Payment mode</dt><dd>UPI</dd></div>
-              <div><dt>Reference number</dt><dd>UTR9081726354</dd></div>
-              <div><dt>Amount paid</dt><dd>{formatMoney(claimedAmount)}</dd></div>
-            </dl>
-            <span className={`amount-match ${amountMatches ? "" : "mismatch"}`}>
-              <Icon name={amountMatches ? "circleCheck" : "alert"} size={17} />
-              {amountMatches ? "Amount matches" : "Amount does not match"}
-            </span>
+            {claim ? (
+              <>
+                <dl>
+                  <div><dt>Payment mode</dt><dd>{claim.payment_mode}</dd></div>
+                  <div><dt>Reference number</dt><dd>{claim.payment_reference}</dd></div>
+                  <div><dt>Amount paid</dt><dd>{formatMoney(Number(claim.paid_amount))}</dd></div>
+                </dl>
+                <span className={`amount-match ${amountMatches ? "" : "mismatch"}`}>
+                  <Icon name={amountMatches ? "circleCheck" : "alert"} size={17} />
+                  {amountMatches ? "Amount matches" : "Amount does not match"}
+                </span>
+              </>
+            ) : (
+              <p className="preview-note">The student has not entered payment details yet.</p>
+            )}
           </div>
         </div>
       </section>
@@ -2450,18 +3261,24 @@ function WardenBookingDetail({
           <div><p className="card-label">DOCUMENTS</p><h2>Verify uploaded files</h2></div>
         </div>
         <div className="review-documents-grid">
-          <DocumentReviewCard
-            title="Hostel fee payment receipt"
-            fileName="hostel-fee-receipt.pdf"
-            status={documentStatuses[0]}
-            onStatus={(status) => setDocumentStatus(0, status)}
-          />
-          <DocumentReviewCard
-            title="Hostel allotment form"
-            fileName="hostel-allotment-form.pdf"
-            status={documentStatuses[1]}
-            onStatus={(status) => setDocumentStatus(1, status)}
-          />
+          {["PAYMENT_RECEIPT", "ALLOTMENT_FORM"].map((type) => {
+            const doc = docOf(type);
+            return (
+              <DocumentReviewCard
+                key={type}
+                title={DOC_LABELS[type]}
+                doc={doc}
+                canReview={isPending}
+                busy={busy}
+                onVerify={() =>
+                  run(() => apiRequest(`/warden/documents/${doc.doc_id}/verify`, "POST", { status: "Verified", remarks: "" }))
+                }
+                onReject={(remarks) =>
+                  run(() => apiRequest(`/warden/documents/${doc.doc_id}/verify`, "POST", { status: "Rejected", remarks }))
+                }
+              />
+            );
+          })}
         </div>
       </section>
 
@@ -2476,7 +3293,17 @@ function WardenBookingDetail({
             onChange={(event) => setBookingRemark(event.target.value)}
             placeholder="Required rejection remark..."
           />
-          <button disabled={!bookingRemark.trim()}>Confirm booking rejection</button>
+          <button
+            disabled={!bookingRemark.trim() || busy}
+            onClick={() =>
+              run(
+                () => apiRequest(`/warden/bookings/${bookingId}/reject`, "POST", { remarks: bookingRemark.trim() }),
+                `Booking rejected. The bed is free again.`,
+              )
+            }
+          >
+            Confirm booking rejection
+          </button>
         </section>
       )}
 
@@ -2486,36 +3313,91 @@ function WardenBookingDetail({
             <h3>Reassign to a free bed</h3>
             <p>Choose another available bed before confirming.</p>
           </div>
-          <select value={replacementBed} onChange={(event) => setReplacementBed(event.target.value)}>
-            {freeBedOptions.map((bed) => (
-              <option value={bed.id} key={bed.id}>{bed.label} • {formatMoney(bed.price)}</option>
-            ))}
-          </select>
-          <span className={`price-change ${priceDifference < 0 ? "refund" : ""}`}>
-            {priceDifference > 0
-              ? `Student will be charged +${formatMoney(priceDifference)}`
-              : priceDifference < 0
-                ? `Student will be refunded ${formatMoney(Math.abs(priceDifference))}`
-                : "No price adjustment required"}
-          </span>
-          <button>Confirm reassignment</button>
+          {freeBeds.length === 0 ? (
+            <p className="preview-note">No free beds in your hostel right now.</p>
+          ) : (
+            <>
+              <select value={replacementBed} onChange={(event) => setReplacementBed(event.target.value)}>
+                {freeBeds.map((bed) => (
+                  <option value={bed.bed_id} key={bed.bed_id}>
+                    Floor {bed.floor_number} • Room {bed.room_number} • Bed {bed.bed_number} • {bed.room_type}{" "}
+                    {Number(bed.is_ac) ? "AC" : "Non-AC"} {bed.bed_level}
+                    {Number(bed.near_window) ? " • Window" : ""} • {formatMoney(Number(bed.price_total))}
+                  </option>
+                ))}
+              </select>
+              <input
+                className="reassign-remark"
+                value={reassignRemark}
+                onChange={(event) => setReassignRemark(event.target.value)}
+                placeholder="Reason (optional)"
+              />
+              <span className={`price-change ${priceDifference < 0 ? "refund" : ""}`}>
+                {priceDifference > 0
+                  ? `Student will be charged +${formatMoney(priceDifference)}`
+                  : priceDifference < 0
+                    ? `Student will be refunded ${formatMoney(Math.abs(priceDifference))}`
+                    : "No price adjustment required"}
+              </span>
+            </>
+          )}
+          <button
+            disabled={!replacement || busy}
+            onClick={() =>
+              run(
+                () =>
+                  apiRequest(`/warden/bookings/${bookingId}/reassign`, "POST", {
+                    new_bed_id: Number(replacementBed),
+                    remarks: reassignRemark.trim() || "Reassigned by warden",
+                  }),
+                `${booking.student_name} was moved to the new bed.`,
+              )
+            }
+          >
+            Confirm reassignment
+          </button>
         </section>
       )}
 
-      <div className="warden-action-bar">
-        <div>
-          <button className="reject-booking-button" onClick={() => { setShowBookingReject(!showBookingReject); setShowReassign(false); }}>
-            Reject booking
-          </button>
-          <button className="reassign-button" onClick={() => { setShowReassign(!showReassign); setShowBookingReject(false); }}>
-            Reassign
-          </button>
+      {isPending ? (
+        <div className="warden-action-bar">
+          <div>
+            <button
+              className="reject-booking-button"
+              disabled={busy}
+              onClick={() => { setShowBookingReject(!showBookingReject); setShowReassign(false); }}
+            >
+              Reject booking
+            </button>
+            <button className="reassign-button" disabled={busy} onClick={openReassign}>
+              Reassign
+            </button>
+          </div>
+          <div className="approve-action">
+            {!bothVerified && <span>Verify both documents to approve</span>}
+            <PrimaryButton
+              disabled={!bothVerified || busy}
+              onClick={() =>
+                run(
+                  () => apiRequest(`/warden/bookings/${bookingId}/approve`, "POST"),
+                  `${booking.student_name}’s booking is approved.`,
+                )
+              }
+            >
+              Approve booking
+            </PrimaryButton>
+          </div>
         </div>
-        <div className="approve-action">
-          {!bothVerified && <span>Verify both documents to approve</span>}
-          <PrimaryButton disabled={!bothVerified}>Approve booking</PrimaryButton>
+      ) : (
+        <div className="state-message expired">
+          <Icon name="clock" size={20} />
+          <div>
+            <strong>This booking is {String(booking.status).toLowerCase()}</strong>
+            <p>Only pending bookings can be reviewed.</p>
+          </div>
         </div>
-      </div>
+      )}
+      {error && <ErrorToast message={error} onClose={() => setError("")} />}
     </main>
   );
 }
@@ -2523,62 +3405,61 @@ function WardenBookingDetail({
 type AdminPage = "overview" | "wardens" | "structure" | "admissions" | "fees";
 
 type WardenRecord = {
-  id: number;
+  warden_id: number;
   name: string;
   email: string;
-  hostel: string;
+  phone: string | null;
+  hostel_id: number;
+  hostel_name: string;
 };
 
-type FeeRow = {
-  id: number;
-  roomType: "Double" | "Quad";
-  ac: boolean;
-  bedLevel: "Lower" | "Upper" | "Single";
-  hostelFee: number;
-  utility: number;
-  messAdvance: number;
-  securityDeposit: number;
+type AdminHelpers = {
+  notify: (message: string) => void;
+  fail: (message: string) => void;
 };
 
-const initialWardens: WardenRecord[] = [
-  { id: 1, name: "Rajesh Verma", email: "rajesh.verma@jklu.edu.in", hostel: "Boys Hostel A" },
-  { id: 2, name: "Amit Joshi", email: "amit.joshi@jklu.edu.in", hostel: "Boys Hostel B" },
-  { id: 3, name: "Neha Kapoor", email: "neha.kapoor@jklu.edu.in", hostel: "Girls Hostel A" },
-  { id: 4, name: "Priya Menon", email: "priya.menon@jklu.edu.in", hostel: "Girls Hostel B" },
-];
+const crore = (value: number) => `Rs ${Number(value).toLocaleString("en-IN")}`;
 
-const initialFeeRows: FeeRow[] = [
-  { id: 1, roomType: "Quad", ac: true, bedLevel: "Lower", hostelFee: 38000, utility: 12500, messAdvance: 31250, securityDeposit: 5000 },
-  { id: 2, roomType: "Quad", ac: true, bedLevel: "Upper", hostelFee: 35500, utility: 12500, messAdvance: 31250, securityDeposit: 5000 },
-  { id: 3, roomType: "Quad", ac: false, bedLevel: "Lower", hostelFee: 33000, utility: 10000, messAdvance: 31250, securityDeposit: 5000 },
-  { id: 4, roomType: "Quad", ac: false, bedLevel: "Upper", hostelFee: 30500, utility: 10000, messAdvance: 31250, securityDeposit: 5000 },
-  { id: 5, roomType: "Double", ac: true, bedLevel: "Single", hostelFee: 46000, utility: 12500, messAdvance: 31250, securityDeposit: 5000 },
-  { id: 6, roomType: "Double", ac: false, bedLevel: "Single", hostelFee: 41000, utility: 10000, messAdvance: 31250, securityDeposit: 5000 },
-];
+function AdminOverview({ fail }: AdminHelpers) {
+  const [stats, setStats] = useState<any>(null);
 
-function AdminOverview() {
-  const stats = [
-    { label: "Students registered", value: "1,248", note: "1,310 admissions on record", icon: "users", theme: "orange" },
-    { label: "Pending bookings", value: "86", note: "Awaiting warden review", icon: "clipboard", theme: "purple" },
-    { label: "Approved bookings", value: "702", note: "56% of registered students", icon: "circleCheck", theme: "green" },
-    { label: "Money collected", value: "Rs 6.8 Cr", note: "Current academic session", icon: "money", theme: "orange" },
-    { label: "Total beds", value: "2,560", note: "Across four hostels", icon: "bed", theme: "red" },
-  ];
-  const hostelRows = [
-    { name: "Boys Hostel A", total: 640, booked: 502, available: 108, blocked: 30 },
-    { name: "Boys Hostel B", total: 640, booked: 476, available: 137, blocked: 27 },
-    { name: "Girls Hostel A", total: 640, booked: 521, available: 96, blocked: 23 },
-    { name: "Girls Hostel B", total: 640, booked: 493, available: 121, blocked: 26 },
+  useEffect(() => {
+    let alive = true;
+    apiRequest("/admin/stats", "GET")
+      .then((data) => { if (alive) setStats(data); })
+      .catch((err) => { if (alive) fail(err.message); });
+    return () => { alive = false; };
+  }, []);
+
+  if (!stats) return <ScreenSkeleton />;
+
+  const registered = Number(stats.students_registered);
+  const approved = Number(stats.approved_bookings);
+  const totalBeds = Number(stats.total_beds);
+  const hostelRows = (stats.per_hostel || []).map((h: any) => ({
+    name: h.hostel_name,
+    total: Number(h.total_beds),
+    booked: Number(h.booked),
+    inProgress: Number(h.in_progress || 0),
+    available: Number(h.available),
+    blocked: Number(h.blocked || 0),
+  }));
+  const cards = [
+    { label: "Students registered", value: registered.toLocaleString("en-IN"), note: `${Number(stats.admissions_total).toLocaleString("en-IN")} admissions on record`, icon: "users", theme: "orange", fill: registered / Math.max(1, Number(stats.admissions_total)) },
+    { label: "Pending bookings", value: Number(stats.pending_bookings).toLocaleString("en-IN"), note: "Awaiting warden review", icon: "clipboard", theme: "purple", fill: Number(stats.pending_bookings) / Math.max(1, registered) },
+    { label: "Approved bookings", value: approved.toLocaleString("en-IN"), note: registered ? `${Math.round((approved / registered) * 100)}% of registered students` : "No students yet", icon: "circleCheck", theme: "green", fill: approved / Math.max(1, registered) },
+    { label: "Money collected", value: crore(Number(stats.money_collected)), note: "Current academic session", icon: "money", theme: "orange", fill: 1 },
+    { label: "Total beds", value: totalBeds.toLocaleString("en-IN"), note: `Across ${hostelRows.length} hostels`, icon: "bed", theme: "red", fill: 1 },
   ];
 
   return (
     <>
       <section className="admin-stats">
-        {stats.map((stat) => (
+        {cards.map((stat) => (
           <article className="stat-card admin-stat-card" key={stat.label}>
             <div className={`stat-icon ${stat.theme}`}><Icon name={stat.icon} size={23} /></div>
             <div className="admin-stat-value"><strong>{stat.value}</strong><p>{stat.label}</p></div>
-            <div className="mini-progress"><span /></div>
+            <div className="mini-progress"><span style={{ width: `${Math.min(100, Math.max(4, stat.fill * 100))}%` }} /></div>
             <small>{stat.note}</small>
           </article>
         ))}
@@ -2586,14 +3467,14 @@ function AdminOverview() {
       <section className="admin-card hostel-capacity-card">
         <div className="admin-card-heading">
           <div><p className="card-label">CAPACITY OVERVIEW</p><h2>Hostels</h2></div>
-          <span>Academic session 2025–26</span>
+          <span>Academic session 2026–27</span>
         </div>
         <div className="admin-table-wrap">
           <table className="admin-table hostel-table">
             <thead><tr><th>Hostel</th><th>Total beds</th><th>Booked</th><th>Available</th><th>Occupancy</th></tr></thead>
             <tbody>
-              {hostelRows.map((hostel) => {
-                const percentage = Math.round((hostel.booked / hostel.total) * 100);
+              {hostelRows.map((hostel: any) => {
+                const percentage = hostel.total ? Math.round((hostel.booked / hostel.total) * 100) : 0;
                 return (
                   <tr key={hostel.name}>
                     <td><strong>{hostel.name}</strong><span>{hostel.blocked} beds blocked</span></td>
@@ -2615,20 +3496,79 @@ function AdminOverview() {
   );
 }
 
-function WardensAdmin() {
-  const [wardens, setWardens] = useState(initialWardens);
+function WardensAdmin({ notify, fail }: AdminHelpers) {
+  const [wardens, setWardens] = useState<WardenRecord[]>([]);
+  const [hostelOptions, setHostelOptions] = useState<any[]>([]);
+  const [loaded, setLoaded] = useState(false);
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
-  const [hostel, setHostel] = useState("Boys Hostel A");
+  const [phone, setPhone] = useState("");
+  const [password, setPassword] = useState("");
+  const [hostelId, setHostelId] = useState("");
+  const [saving, setSaving] = useState(false);
   const [removeTarget, setRemoveTarget] = useState<WardenRecord | null>(null);
 
-  const addWarden = (event: FormEvent) => {
-    event.preventDefault();
-    if (!name.trim() || !email.trim()) return;
-    setWardens((current) => [...current, { id: Date.now(), name, email, hostel }]);
-    setName("");
-    setEmail("");
+  const load = async () => {
+    try {
+      const [wardenRows, hostelRows] = await Promise.all([
+        apiRequest("/admin/wardens", "GET"),
+        apiRequest("/admin/hostels", "GET"),
+      ]);
+      setWardens(wardenRows);
+      setHostelOptions(hostelRows);
+    } catch (err: any) {
+      fail(err.message);
+    } finally {
+      setLoaded(true);
+    }
   };
+
+  useEffect(() => { load(); }, []);
+
+  // Each hostel has exactly one warden, so only hostels without one can be chosen
+  const freeHostels = hostelOptions.filter((h) => !wardens.some((w) => w.hostel_id === h.hostel_id));
+  useEffect(() => {
+    if (!freeHostels.some((h) => String(h.hostel_id) === hostelId)) {
+      setHostelId(freeHostels[0] ? String(freeHostels[0].hostel_id) : "");
+    }
+  }, [wardens, hostelOptions]);
+
+  const addWarden = async (event: FormEvent) => {
+    event.preventDefault();
+    if (saving) return;
+    setSaving(true);
+    try {
+      await apiRequest("/admin/wardens", "POST", {
+        hostel_id: Number(hostelId),
+        name: name.trim(),
+        email: email.trim().toLowerCase(),
+        phone: phone.trim() || null,
+        password,
+      });
+      setName(""); setEmail(""); setPhone(""); setPassword("");
+      notify("Warden added. They can sign in now.");
+      await load();
+    } catch (err: any) {
+      fail(err.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const removeWarden = async () => {
+    if (!removeTarget) return;
+    try {
+      await apiRequest(`/admin/wardens/${removeTarget.warden_id}`, "DELETE");
+      notify(`${removeTarget.name} was removed.`);
+      setRemoveTarget(null);
+      await load();
+    } catch (err: any) {
+      fail(err.message);
+      setRemoveTarget(null);
+    }
+  };
+
+  if (!loaded) return <ScreenSkeleton />;
 
   return (
     <div className="admin-split-page">
@@ -2639,17 +3579,17 @@ function WardensAdmin() {
         </div>
         <div className="warden-admin-rows">
           {wardens.map((warden) => (
-            <div className="warden-admin-row" key={warden.id}>
-              <span className="student-initials">{warden.name.split(" ").map((part) => part[0]).join("")}</span>
+            <div className="warden-admin-row" key={warden.warden_id}>
+              <span className="student-initials">{warden.name.split(" ").map((part) => part[0]).join("").slice(0, 2)}</span>
               <div><strong>{warden.name}</strong><p>{warden.email}</p></div>
-              <span className="warden-hostel">{warden.hostel}</span>
+              <span className="warden-hostel">{warden.hostel_name}</span>
               <button onClick={() => setRemoveTarget(warden)}><Icon name="trash" size={16} />Remove</button>
             </div>
           ))}
           {wardens.length === 0 && (
             <EmptyState
-              title="No wardens assigned"
-              message="Add a warden to give them access to a hostel."
+              title="No wardens yet"
+              message="Add a warden so someone can review bookings for each hostel."
             />
           )}
         </div>
@@ -2659,8 +3599,11 @@ function WardensAdmin() {
         <form onSubmit={addWarden}>
           <label className="plain-field"><span>Full name</span><input value={name} onChange={(event) => setName(event.target.value)} placeholder="Warden’s name" required /></label>
           <label className="plain-field"><span>Official email</span><input type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="name@jklu.edu.in" required /></label>
-          <label className="select-field"><span>Assigned hostel</span><select value={hostel} onChange={(event) => setHostel(event.target.value)}>{hostels.map((item) => <option key={item.hostel_id}>{item.hostel_name}</option>)}</select></label>
-          <PrimaryButton type="submit">Add warden</PrimaryButton>
+          <label className="plain-field"><span>Phone (optional)</span><input value={phone} onChange={(event) => setPhone(event.target.value)} placeholder="10 digit number" /></label>
+          <label className="plain-field"><span>Temporary password</span><input type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="At least 6 characters" minLength={6} required /></label>
+          <label className="select-field"><span>Assigned hostel</span><select value={hostelId} onChange={(event) => setHostelId(event.target.value)}>{freeHostels.length === 0 && <option value="">All hostels have a warden</option>}{freeHostels.map((item) => <option key={item.hostel_id} value={item.hostel_id}>{item.hostel_name}</option>)}</select></label>
+          {freeHostels.length === 0 && <p className="preview-note">Each hostel has one warden. Remove a warden or add a new hostel first.</p>}
+          <PrimaryButton type="submit" disabled={saving || !hostelId}>{saving ? "Adding..." : "Add warden"}</PrimaryButton>
         </form>
       </section>
       {removeTarget && (
@@ -2668,8 +3611,8 @@ function WardensAdmin() {
           <div className="confirm-dialog">
             <span className="confirm-icon"><Icon name="trash" size={24} /></span>
             <h2>Remove {removeTarget.name}?</h2>
-            <p>They will immediately lose access to {removeTarget.hostel}. This action cannot be undone.</p>
-            <div><button onClick={() => setRemoveTarget(null)}>Keep warden</button><button onClick={() => { setWardens((current) => current.filter((warden) => warden.id !== removeTarget.id)); setRemoveTarget(null); }}>Remove access</button></div>
+            <p>They will immediately lose access to {removeTarget.hostel_name}. This action cannot be undone.</p>
+            <div><button onClick={() => setRemoveTarget(null)}>Keep warden</button><button onClick={removeWarden}>Remove access</button></div>
           </div>
         </div>
       )}
@@ -2677,60 +3620,152 @@ function WardensAdmin() {
   );
 }
 
-function StructureAdmin() {
-  const [hostelList, setHostelList] = useState(
-    hostels.map((item) => ({ name: item.hostel_name, gender: item.gender })),
-  );
+function StructureAdmin({ notify, fail }: AdminHelpers) {
+  const [hostelList, setHostelList] = useState<any[]>([]);
+  const [floorList, setFloorList] = useState<any[]>([]);
+  const [bedCounts, setBedCounts] = useState<Record<string, number>>({});
+  const [loaded, setLoaded] = useState(false);
+  const [busy, setBusy] = useState(false);
   const [hostelName, setHostelName] = useState("");
   const [hostelGender, setHostelGender] = useState("Male");
-  const [floorHostel, setFloorHostel] = useState(hostelList[0].name);
-  const [floorNumber, setFloorNumber] = useState("9");
+  const [hostelFloors, setHostelFloors] = useState("8");
+  const [floorHostel, setFloorHostel] = useState("");
+  const [floorNumber, setFloorNumber] = useState("1");
   const [floorType, setFloorType] = useState("Regular");
-  const [roomHostel, setRoomHostel] = useState(hostelList[0].name);
-  const [roomFloor, setRoomFloor] = useState("1");
+  const [roomHostel, setRoomHostel] = useState("");
+  const [roomFloor, setRoomFloor] = useState("");
   const [roomNumber, setRoomNumber] = useState("");
   const [roomType, setRoomType] = useState("Double");
   const [roomAc, setRoomAc] = useState(true);
-  const [notice, setNotice] = useState("");
 
-  const finish = (message: string) => {
-    setNotice(message);
-    window.setTimeout(() => setNotice(""), 2600);
+  const load = async () => {
+    try {
+      const [hostelRows, floorRows, stats] = await Promise.all([
+        apiRequest("/admin/hostels", "GET"),
+        apiRequest("/admin/floors", "GET"),
+        apiRequest("/admin/stats", "GET"),
+      ]);
+      setHostelList(hostelRows);
+      setFloorList(floorRows);
+      const counts: Record<string, number> = {};
+      (stats.per_hostel || []).forEach((h: any) => { counts[h.hostel_name] = Number(h.total_beds); });
+      setBedCounts(counts);
+      setFloorHostel((current) => current || (hostelRows[0] ? String(hostelRows[0].hostel_id) : ""));
+      setRoomHostel((current) => current || (hostelRows[0] ? String(hostelRows[0].hostel_id) : ""));
+    } catch (err: any) {
+      fail(err.message);
+    } finally {
+      setLoaded(true);
+    }
   };
+
+  useEffect(() => { load(); }, []);
+
+  // Suggest the next floor number for the chosen hostel
+  useEffect(() => {
+    const numbers = floorList.filter((f) => String(f.hostel_id) === floorHostel).map((f) => Number(f.floor_number));
+    setFloorNumber(String((numbers.length ? Math.max(...numbers) : 0) + 1));
+  }, [floorHostel, floorList]);
+
+  const roomFloors = floorList.filter((f) => String(f.hostel_id) === roomHostel);
+  useEffect(() => {
+    if (roomFloors.length && !roomFloors.some((f) => String(f.floor_id) === roomFloor)) {
+      setRoomFloor(String(roomFloors[0].floor_id));
+    }
+    if (!roomFloors.length) setRoomFloor("");
+  }, [roomHostel, floorList]);
+
+  const submit = async (action: () => Promise<any>, message: string, done?: () => void) => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await action();
+      done?.();
+      notify(message);
+      await load();
+    } catch (err: any) {
+      fail(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!loaded) return <ScreenSkeleton />;
+
+  const floorHostelName = hostelList.find((h) => String(h.hostel_id) === floorHostel)?.hostel_name;
 
   return (
     <>
       <section className="admin-card structure-hostels">
         <div className="admin-card-heading"><div><p className="card-label">CURRENT STRUCTURE</p><h2>Hostels</h2></div><span>{hostelList.length} buildings</span></div>
         <div className="structure-hostel-grid">
-          {hostelList.map((hostel) => (
-            <article key={hostel.name}><span className="stat-icon orange"><Icon name="building" size={22} /></span><div><h3>{hostel.name}</h3><p>8 floors • 640 beds</p></div><strong>{hostel.gender}</strong></article>
-          ))}
+          {hostelList.map((hostel) => {
+            const floorsBuilt = floorList.filter((f) => f.hostel_id === hostel.hostel_id).length;
+            return (
+              <article key={hostel.hostel_id}>
+                <span className="stat-icon orange"><Icon name="building" size={22} /></span>
+                <div><h3>{hostel.hostel_name}</h3><p>{floorsBuilt} floors • {bedCounts[hostel.hostel_name] || 0} beds</p></div>
+                <strong>{hostel.gender}</strong>
+              </article>
+            );
+          })}
         </div>
       </section>
       <div className="structure-forms">
-        <form className="admin-card structure-form" onSubmit={(event) => { event.preventDefault(); if (!hostelName.trim()) return; setHostelList((current) => [...current, { name: hostelName, gender: hostelGender }]); setHostelName(""); finish("Hostel added successfully."); }}>
+        <form
+          className="admin-card structure-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            submit(
+              () => apiRequest("/admin/hostels", "POST", { hostel_name: hostelName.trim(), gender: hostelGender, total_floors: Number(hostelFloors) }),
+              "Hostel added. Now add its floors and rooms.",
+              () => setHostelName(""),
+            );
+          }}
+        >
           <div className="structure-form-number">01</div><h2>Add hostel</h2>
           <label className="plain-field"><span>Hostel name</span><input value={hostelName} onChange={(event) => setHostelName(event.target.value)} placeholder="e.g. Boys Hostel C" required /></label>
-          <label className="select-field"><span>Gender</span><select value={hostelGender} onChange={(event) => setHostelGender(event.target.value)}><option>Male</option><option>Female</option></select></label>
-          <button type="submit"><Icon name="plus" size={15} />Add hostel</button>
+          <div className="inline-form-fields">
+            <label className="select-field"><span>Gender</span><select value={hostelGender} onChange={(event) => setHostelGender(event.target.value)}><option>Male</option><option>Female</option></select></label>
+            <label className="plain-field"><span>Planned floors</span><input type="number" min={1} value={hostelFloors} onChange={(event) => setHostelFloors(event.target.value)} required /></label>
+          </div>
+          <button type="submit" disabled={busy}><Icon name="plus" size={15} />Add hostel</button>
         </form>
-        <form className="admin-card structure-form" onSubmit={(event) => { event.preventDefault(); finish(`Floor ${floorNumber} added to ${floorHostel}.`); }}>
+        <form
+          className="admin-card structure-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            submit(
+              () => apiRequest("/admin/floors", "POST", { hostel_id: Number(floorHostel), floor_number: Number(floorNumber), floor_type: floorType }),
+              `Floor ${floorNumber} added to ${floorHostelName}.`,
+            );
+          }}
+        >
           <div className="structure-form-number">02</div><h2>Add floor</h2>
-          <label className="select-field"><span>Hostel</span><select value={floorHostel} onChange={(event) => setFloorHostel(event.target.value)}>{hostelList.map((hostel) => <option key={hostel.name}>{hostel.name}</option>)}</select></label>
-          <div className="inline-form-fields"><label className="plain-field"><span>Floor number</span><input type="number" value={floorNumber} onChange={(event) => setFloorNumber(event.target.value)} /></label><label className="select-field"><span>Floor type</span><select value={floorType} onChange={(event) => setFloorType(event.target.value)}><option>Regular</option><option>Quiet</option></select></label></div>
-          <button type="submit"><Icon name="plus" size={15} />Add floor</button>
+          <label className="select-field"><span>Hostel</span><select value={floorHostel} onChange={(event) => setFloorHostel(event.target.value)}>{hostelList.map((hostel) => <option key={hostel.hostel_id} value={hostel.hostel_id}>{hostel.hostel_name}</option>)}</select></label>
+          <div className="inline-form-fields"><label className="plain-field"><span>Floor number</span><input type="number" min={1} value={floorNumber} onChange={(event) => setFloorNumber(event.target.value)} /></label><label className="select-field"><span>Floor type</span><select value={floorType} onChange={(event) => setFloorType(event.target.value)}><option>Regular</option><option>Quiet</option></select></label></div>
+          <button type="submit" disabled={busy}><Icon name="plus" size={15} />Add floor</button>
         </form>
-        <form className="admin-card structure-form" onSubmit={(event) => { event.preventDefault(); if (!roomNumber.trim()) return; finish(`Room ${roomNumber} added. Beds created automatically.`); }}>
+        <form
+          className="admin-card structure-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (!roomFloor) return;
+            submit(
+              () => apiRequest("/admin/rooms", "POST", { floor_id: Number(roomFloor), room_number: roomNumber.trim(), room_type: roomType, is_ac: roomAc }),
+              `Room ${roomNumber.trim()} added. Beds were created automatically.`,
+              () => setRoomNumber(""),
+            );
+          }}
+        >
           <div className="structure-form-number">03</div><h2>Add room</h2>
-          <label className="select-field"><span>Hostel</span><select value={roomHostel} onChange={(event) => setRoomHostel(event.target.value)}>{hostelList.map((hostel) => <option key={hostel.name}>{hostel.name}</option>)}</select></label>
-          <div className="inline-form-fields"><label className="select-field"><span>Floor</span><select value={roomFloor} onChange={(event) => setRoomFloor(event.target.value)}>{[1,2,3,4,5,6,7,8].map((floor) => <option key={floor}>{floor}</option>)}</select></label><label className="plain-field"><span>Room number</span><input value={roomNumber} onChange={(event) => setRoomNumber(event.target.value)} placeholder="e.g. 121" required /></label></div>
+          <label className="select-field"><span>Hostel</span><select value={roomHostel} onChange={(event) => setRoomHostel(event.target.value)}>{hostelList.map((hostel) => <option key={hostel.hostel_id} value={hostel.hostel_id}>{hostel.hostel_name}</option>)}</select></label>
+          <div className="inline-form-fields"><label className="select-field"><span>Floor</span><select value={roomFloor} onChange={(event) => setRoomFloor(event.target.value)}>{roomFloors.length === 0 && <option value="">No floors yet</option>}{roomFloors.map((floor) => <option key={floor.floor_id} value={floor.floor_id}>{floor.floor_number}</option>)}</select></label><label className="plain-field"><span>Room number</span><input value={roomNumber} onChange={(event) => setRoomNumber(event.target.value)} placeholder="e.g. 121" required /></label></div>
           <div className="inline-form-fields"><label className="select-field"><span>Room type</span><select value={roomType} onChange={(event) => setRoomType(event.target.value)}><option>Double</option><option>Quad</option></select></label><label className="compact-toggle"><span><strong>Air conditioned</strong><small>{roomAc ? "AC room" : "Non-AC room"}</small></span><input type="checkbox" checked={roomAc} onChange={(event) => setRoomAc(event.target.checked)} /><i><b /></i></label></div>
           <p className="auto-bed-note"><Icon name="circleCheck" size={14} />Beds are created automatically based on room type.</p>
-          <button type="submit"><Icon name="plus" size={15} />Add room</button>
+          <button type="submit" disabled={busy || !roomFloor}><Icon name="plus" size={15} />Add room</button>
         </form>
       </div>
-      {notice && <div className="admin-toast"><Icon name="circleCheck" size={17} />{notice}</div>}
     </>
   );
 }
@@ -2744,32 +3779,66 @@ type AdmissionRow = {
   gender: string;
 };
 
-const sampleAdmissions: AdmissionRow[] = [
-  { admission_no: "2025/BT/0142", name: "Rohan Sharma", email: "rohan.sharma@example.com", phone: "9876543210", course: "B.Tech CSE", gender: "Male" },
-  { admission_no: "2025/BD/0087", name: "Ananya Mehta", email: "ananya.mehta@example.com", phone: "9823456710", course: "B.Des", gender: "Female" },
-  { admission_no: "2025/BB/0054", name: "Kabir Singh", email: "kabir.singh@example.com", phone: "9765432108", course: "BBA", gender: "Male" },
-];
+// Splits one CSV line and understands "quoted, values"
+const splitCsvLine = (line: string): string[] => {
+  const out: string[] = [];
+  let current = "";
+  let quoted = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"') {
+      if (quoted && line[i + 1] === '"') { current += '"'; i++; } else quoted = !quoted;
+    } else if (ch === "," && !quoted) {
+      out.push(current.trim());
+      current = "";
+    } else current += ch;
+  }
+  out.push(current.trim());
+  return out;
+};
 
-function AdmissionsAdmin() {
+function AdmissionsAdmin({ notify, fail }: AdminHelpers) {
   const [fileName, setFileName] = useState("");
-  const [rows, setRows] = useState<AdmissionRow[]>(sampleAdmissions);
-  const [error, setError] = useState("");
+  const [rows, setRows] = useState<AdmissionRow[]>([]);
+  const [importing, setImporting] = useState(false);
 
   const parseCsv = async (file?: File) => {
     if (!file) return;
-    if (!file.name.toLowerCase().endsWith(".csv")) { setError("Please upload a CSV file."); return; }
-    const text = await file.text();
-    const lines = text.trim().split(/\r?\n/);
-    const headers = lines[0]?.split(",").map((header) => header.trim());
+    if (!file.name.toLowerCase().endsWith(".csv")) { fail("Please upload a CSV file."); return; }
+    const text = (await file.text()).replace(/^\uFEFF/, "");
+    const lines = text.trim().split(/\r?\n/).filter((line) => line.trim());
+    const headers = splitCsvLine(lines[0] || "").map((header) => header.toLowerCase());
     const required = ["admission_no", "name", "email", "phone", "course", "gender"];
-    if (!required.every((field) => headers?.includes(field))) { setError(`CSV must include: ${required.join(", ")}`); return; }
-    const parsed = lines.slice(1).filter(Boolean).map((line) => {
-      const values = line.split(",").map((value) => value.trim());
-      return Object.fromEntries(headers.map((header, index) => [header, values[index] ?? ""])) as AdmissionRow;
+    if (!required.every((field) => headers.includes(field))) { fail(`CSV must include: ${required.join(", ")}`); return; }
+    const parsed = lines.slice(1).map((line) => {
+      const values = splitCsvLine(line);
+      const row = Object.fromEntries(headers.map((header, index) => [header, values[index] ?? ""])) as AdmissionRow;
+      const gender = row.gender.trim().toLowerCase();
+      row.gender = gender.startsWith("m") ? "Male" : gender.startsWith("f") ? "Female" : row.gender;
+      return row;
     });
+    const bad = parsed.filter((r) => !r.admission_no || !r.name || !r.course || !["Male", "Female"].includes(r.gender));
+    if (bad.length) {
+      fail(`${bad.length} row(s) are missing admission_no, name or course, or gender is not Male/Female. Fix the file and upload again.`);
+      return;
+    }
     setRows(parsed);
     setFileName(file.name);
-    setError("");
+  };
+
+  const importRows = async () => {
+    if (importing || rows.length === 0) return;
+    setImporting(true);
+    try {
+      const result = await apiRequest("/admin/admissions/import", "POST", { records: rows });
+      notify(`${result.imported} admission records imported.`);
+      setRows([]);
+      setFileName("");
+    } catch (err: any) {
+      fail(err.message);
+    } finally {
+      setImporting(false);
+    }
   };
 
   return (
@@ -2781,51 +3850,130 @@ function AdmissionsAdmin() {
         onDragOver={(event) => event.preventDefault()}
         onDrop={(event) => { event.preventDefault(); parseCsv(event.dataTransfer.files[0]); }}
       >
-        <input type="file" accept=".csv,text/csv" onChange={(event) => parseCsv(event.target.files?.[0])} />
+        <input type="file" accept=".csv,text/csv" onChange={(event) => { parseCsv(event.target.files?.[0]); event.target.value = ""; }} />
         <span><Icon name={fileName ? "circleCheck" : "upload"} size={27} /></span>
         <strong>{fileName || "Drop admissions CSV here or browse"}</strong>
         <p>{fileName ? `${rows.length} records ready to import` : "CSV files only • First row must contain column headers"}</p>
       </label>
-      {error && <ErrorToast message={error} onClose={() => setError("")} />}
-      <div className="preview-heading"><div><p className="card-label">DATA CHECK</p><h3>Preview</h3></div>{fileName && <button>Import {rows.length} records</button>}</div>
-      <div className="admin-table-wrap">
-        <table className="admin-table admissions-table">
-          <thead><tr><th>Admission no.</th><th>Name</th><th>Email</th><th>Phone</th><th>Course</th><th>Gender</th></tr></thead>
-          <tbody>{rows.slice(0, 8).map((row, index) => <tr key={`${row.admission_no}-${index}`}><td><strong>{row.admission_no}</strong></td><td>{row.name}</td><td>{row.email}</td><td>{row.phone}</td><td>{row.course}</td><td><span className="gender-chip">{row.gender}</span></td></tr>)}</tbody>
-        </table>
-      </div>
+      <div className="preview-heading"><div><p className="card-label">DATA CHECK</p><h3>Preview</h3></div>{rows.length > 0 && <button disabled={importing} onClick={importRows}>{importing ? "Importing..." : `Import ${rows.length} records`}</button>}</div>
+      {rows.length > 0 && (
+        <div className="admin-table-wrap">
+          <table className="admin-table admissions-table">
+            <thead><tr><th>Admission no.</th><th>Name</th><th>Email</th><th>Phone</th><th>Course</th><th>Gender</th></tr></thead>
+            <tbody>{rows.slice(0, 8).map((row, index) => <tr key={`${row.admission_no}-${index}`}><td><strong>{row.admission_no}</strong></td><td>{row.name}</td><td>{row.email}</td><td>{row.phone}</td><td>{row.course}</td><td><span className="gender-chip">{row.gender}</span></td></tr>)}</tbody>
+          </table>
+        </div>
+      )}
       {rows.length === 0 && (
         <EmptyState
-          title="No admission records"
-          message="Upload a CSV file containing at least one student record."
+          title="No records to show yet"
+          message="Upload a CSV file with at least one student to see a preview."
         />
       )}
     </section>
   );
 }
 
-function FeesAdmin() {
-  const [rows, setRows] = useState(initialFeeRows);
-  const updateFee = (id: number, field: keyof FeeRow, value: string | number | boolean) => {
-    setRows((current) => current.map((row) => row.id === id ? { ...row, [field]: value } : row));
+const FEE_FIELDS = [
+  ["hostel_fee", "Hostel fee"],
+  ["utility_charges", "Utility"],
+  ["mess_advance", "Mess advance"],
+  ["security_deposit", "Security"],
+] as const;
+
+function FeesAdmin({ notify, fail }: AdminHelpers) {
+  const [rows, setRows] = useState<any[]>([]);
+  const [extras, setExtras] = useState<any[]>([]);
+  const [dirty, setDirty] = useState<number[]>([]);
+  const [loaded, setLoaded] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  const load = async () => {
+    try {
+      const data = await apiRequest("/admin/fees", "GET");
+      setRows(data.fees.map((f: any) => ({
+        ...f,
+        is_ac: Boolean(Number(f.is_ac)),
+        hostel_fee: Number(f.hostel_fee),
+        utility_charges: Number(f.utility_charges),
+        mess_advance: Number(f.mess_advance),
+        security_deposit: Number(f.security_deposit),
+      })));
+      setExtras(data.extras.map((e: any) => ({ ...e, amount: Number(e.amount), is_active: Boolean(Number(e.is_active)) })));
+      setDirty([]);
+    } catch (err: any) {
+      fail(err.message);
+    } finally {
+      setLoaded(true);
+    }
+  };
+
+  useEffect(() => { load(); }, []);
+
+  const updateFee = (id: number, field: string, value: number) => {
+    setRows((current) => current.map((row) => row.fee_id === id ? { ...row, [field]: value } : row));
+    setDirty((current) => (current.includes(id) ? current : [...current, id]));
+  };
+
+  const saveFees = async () => {
+    if (saving || dirty.length === 0) return;
+    setSaving(true);
+    try {
+      for (const id of dirty) {
+        const row = rows.find((r) => r.fee_id === id);
+        await apiRequest(`/admin/fees/${id}`, "PUT", {
+          hostel_fee: row.hostel_fee,
+          utility_charges: row.utility_charges,
+          mess_advance: row.mess_advance,
+          security_deposit: row.security_deposit,
+        });
+      }
+      notify("Fees saved. New receipts use these amounts.");
+      await load();
+    } catch (err: any) {
+      fail(err.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const saveExtra = async (extra: any) => {
+    try {
+      await apiRequest(`/admin/extra-charges/${extra.code}`, "PUT", { amount: extra.amount, is_active: extra.is_active });
+      notify(`${extra.description} updated.`);
+      await load();
+    } catch (err: any) {
+      fail(err.message);
+    }
+  };
+
+  const changeExtra = (code: string, patch: any) =>
+    setExtras((current) => current.map((e) => (e.code === code ? { ...e, ...patch } : e)));
+
+  if (!loaded) return <ScreenSkeleton />;
+
+  const extraIcons: Record<string, { icon: string; theme: string; note: string }> = {
+    WINDOW_BED: { icon: "sun", theme: "orange", note: "Added when a student picks a window bed" },
+    TRANSPORT_SEM: { icon: "building", theme: "purple", note: "Optional" },
+    TRANSPORT_YEAR: { icon: "building", theme: "green", note: "Optional" },
   };
 
   return (
     <>
       <section className="admin-card fees-admin-card">
-        <div className="admin-card-heading"><div><p className="card-label">ACADEMIC SESSION 2025–26</p><h2>Hostel fee matrix</h2></div><button className="save-fees">Save changes</button></div>
+        <div className="admin-card-heading"><div><p className="card-label">ACADEMIC SESSION 2026–27</p><h2>Hostel fee matrix</h2></div><button className="save-fees" disabled={saving || dirty.length === 0} onClick={saveFees}>{saving ? "Saving..." : "Save changes"}</button></div>
         <div className="admin-table-wrap">
           <table className="admin-table fees-table">
-            <thead><tr><th>Room type</th><th>AC</th><th>Bed level</th><th>Hostel fee</th><th>Utility</th><th>Mess advance</th><th>Security</th><th>Computed total</th></tr></thead>
+            <thead><tr><th>Room type</th><th>AC</th><th>Bed level</th>{FEE_FIELDS.map(([, label]) => <th key={label}>{label}</th>)}<th>Computed total</th></tr></thead>
             <tbody>
               {rows.map((row) => {
-                const total = row.hostelFee + row.utility + row.messAdvance + row.securityDeposit;
+                const total = row.hostel_fee + row.utility_charges + row.mess_advance + row.security_deposit;
                 return (
-                  <tr key={row.id}>
-                    <td><select value={row.roomType} onChange={(event) => updateFee(row.id, "roomType", event.target.value)}><option>Double</option><option>Quad</option></select></td>
-                    <td><label className="table-toggle"><input type="checkbox" checked={row.ac} onChange={(event) => updateFee(row.id, "ac", event.target.checked)} /><span>{row.ac ? "AC" : "Non-AC"}</span></label></td>
-                    <td><select value={row.bedLevel} onChange={(event) => updateFee(row.id, "bedLevel", event.target.value)}><option>Lower</option><option>Upper</option><option>Single</option></select></td>
-                    {(["hostelFee", "utility", "messAdvance", "securityDeposit"] as const).map((field) => <td key={field}><div className="fee-input"><span>Rs</span><input type="number" value={row[field]} onChange={(event) => updateFee(row.id, field, Number(event.target.value))} /></div></td>)}
+                  <tr key={row.fee_id}>
+                    <td><TagLabel kind="room" value={row.room_type} size={15} /></td>
+                    <td><TagLabel kind="ac" value={row.is_ac ? "AC" : "Non-AC"} size={15} /></td>
+                    <td><TagLabel kind="bed" value={row.bed_level} size={15} /></td>
+                    {FEE_FIELDS.map(([field]) => <td key={field}><div className="fee-input"><span>Rs</span><input type="number" min={0} value={row[field]} onChange={(event) => updateFee(row.fee_id, field, Number(event.target.value))} /></div></td>)}
                     <td><strong>{formatMoney(total)}</strong></td>
                   </tr>
                 );
@@ -2837,9 +3985,21 @@ function FeesAdmin() {
       <section className="admin-card extra-charges-card">
         <div className="admin-card-heading"><div><p className="card-label">OPTIONAL ADD-ONS</p><h2>Extra charges</h2></div></div>
         <div className="extra-charge-grid">
-          <article><span className="stat-icon orange"><Icon name="sun" size={22} /></span><div><p>Window-side bed</p><strong>Rs 10,000</strong><small>Per academic year</small></div></article>
-          <article><span className="stat-icon purple"><Icon name="building" size={22} /></span><div><p>Transport • Per semester</p><strong>Rs 26,250</strong><small>Optional</small></div></article>
-          <article><span className="stat-icon green"><Icon name="building" size={22} /></span><div><p>Transport • Yearly</p><strong>Rs 52,500</strong><small>Optional</small></div></article>
+          {extras.map((extra) => {
+            const look = extraIcons[extra.code] || { icon: "building", theme: "orange", note: "" };
+            return (
+              <article key={extra.code}>
+                <span className={`stat-icon ${look.theme}`}><Icon name={look.icon} size={22} /></span>
+                <div>
+                  <p>{extra.description}</p>
+                  <div className="fee-input extra-input"><span>Rs</span><input type="number" min={0} value={extra.amount} onChange={(event) => changeExtra(extra.code, { amount: Number(event.target.value) })} /></div>
+                  <label className="extra-active"><input type="checkbox" checked={extra.is_active} onChange={(event) => changeExtra(extra.code, { is_active: event.target.checked })} />Offered to students</label>
+                  <small>{look.note}</small>
+                  <button className="extra-save" onClick={() => saveExtra(extra)}>Save</button>
+                </div>
+              </article>
+            );
+          })}
         </div>
       </section>
     </>
@@ -2848,6 +4008,8 @@ function FeesAdmin() {
 
 function AdminView() {
   const [page, setPage] = useState<AdminPage>("overview");
+  const [notice, setNotice] = useState("");
+  const [error, setError] = useState("");
   const pages: { id: AdminPage; label: string }[] = [
     { id: "overview", label: "Overview" },
     { id: "wardens", label: "Wardens" },
@@ -2856,22 +4018,30 @@ function AdminView() {
     { id: "fees", label: "Fees" },
   ];
 
+  const notify = (message: string) => {
+    setNotice(message);
+    window.setTimeout(() => setNotice(""), 3200);
+  };
+  const helpers: AdminHelpers = { notify, fail: setError };
+
   return (
     <main className="page-shell admin-page">
       <section className="page-heading admin-heading">
-        <div><p className="eyebrow">ADMIN VIEW</p><h1>Hostel administration</h1><p>Manage capacity, staff, admissions, and fees across JKLU hostels.</p></div>
+        <div><p className="eyebrow">ADMIN VIEW</p><h1>Run the hostels</h1><p>Keep an eye on beds, wardens, admissions and fees in one place.</p></div>
         <span className="session-pill"><span />System operational</span>
       </section>
       <nav className="admin-tabs" aria-label="Admin sections">
         {pages.map((item) => <button className={page === item.id ? "active" : ""} onClick={() => setPage(item.id)} key={item.id}>{item.label}</button>)}
       </nav>
       <div className="admin-page-content" key={page}>
-        {page === "overview" && <AdminOverview />}
-        {page === "wardens" && <WardensAdmin />}
-        {page === "structure" && <StructureAdmin />}
-        {page === "admissions" && <AdmissionsAdmin />}
-        {page === "fees" && <FeesAdmin />}
+        {page === "overview" && <AdminOverview {...helpers} />}
+        {page === "wardens" && <WardensAdmin {...helpers} />}
+        {page === "structure" && <StructureAdmin {...helpers} />}
+        {page === "admissions" && <AdmissionsAdmin {...helpers} />}
+        {page === "fees" && <FeesAdmin {...helpers} />}
       </div>
+      {notice && <div className="admin-toast"><Icon name="circleCheck" size={17} />{notice}</div>}
+      {error && <ErrorToast message={error} onClose={() => setError("")} />}
     </main>
   );
 }
@@ -2884,11 +4054,18 @@ export default function App() {
   });
   const [currentUser, setCurrentUser] = useState<any>(() => getUser());
   const [isLoading, setIsLoading] = useState(false);
-  const [wardenBooking, setWardenBooking] = useState<WardenBooking | null>(null);
+  const [wardenBookingId, setWardenBookingId] = useState<number | null>(null);
+  const [wardenNotice, setWardenNotice] = useState("");
   const [theme, setTheme] = useState<Theme>(() => {
     const savedTheme = window.localStorage.getItem("jklu-theme");
     return savedTheme === "dark" ? "dark" : "light";
   });
+
+  // History stack: screens you can go back to
+  const [history, setHistory] = useState<Screen[]>([]);
+
+  // ChooseRoom registers a handler here so the global back can step it internally
+  const chooseRoomBackRef = useRef<(() => boolean) | null>(null);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -2901,16 +4078,57 @@ export default function App() {
     if (user && token) {
       setRole(user.role);
       setCurrentUser(user);
-      setScreen(user.role === "student" ? "home" : user.role === "warden" ? "warden" : "admin");
+      const homeScreen: Screen = user.role === "student" ? "home" : user.role === "warden" ? "warden" : "admin";
+      setScreen(homeScreen);
+      setHistory([]); // fresh start, no back
     }
   }, []);
 
-  const transitionTo = (nextScreen: Screen) => {
+  // Screens where Back is NEVER shown (login + the three home screens)
+  const noBackScreens: Screen[] = ["login", "home", "warden", "admin"];
+  const homeFor = (r: UserRole | null): Screen =>
+    r === "admin" ? "admin" : r === "warden" ? "warden" : r === "student" ? "home" : "login";
+
+  const showScreen = (nextScreen: Screen) => {
     setIsLoading(true);
     window.setTimeout(() => {
       setScreen(nextScreen);
       setIsLoading(false);
     }, 360);
+  };
+
+  // Go forward: remember where we came from so Back can return there
+  const pushScreen = (nextScreen: Screen) => {
+    if (nextScreen === screen) return;
+    if (noBackScreens.includes(nextScreen)) {
+      setHistory([]); // arriving at a home screen starts fresh
+    } else {
+      setHistory((prev) => {
+        const seen = prev.lastIndexOf(nextScreen);
+        if (seen >= 0) return prev.slice(0, seen); // going back to a screen we already visited
+        return noBackScreens.includes(screen) ? prev : [...prev, screen];
+      });
+    }
+    showScreen(nextScreen);
+  };
+
+  // Back: Choose Room steps first, then the history stack, then the role's home
+  const goBack = () => {
+    if (screen === "fee-receipt") {
+      // A held bed cannot be re-picked, so Back from payment returns to Student Home
+      setHistory([]);
+      showScreen("home");
+      return;
+    }
+    if (screen === "choose-room") {
+      if (chooseRoomBackRef.current && chooseRoomBackRef.current()) return; // Bed -> Room -> Floor -> Hostel
+      setHistory([]);
+      showScreen("home"); // Hostel step goes to Student Home
+      return;
+    }
+    const target = history.length > 0 ? history[history.length - 1] : homeFor(role);
+    setHistory(history.slice(0, -1));
+    showScreen(target);
   };
 
   const navigate = (nextScreen: Screen) => {
@@ -2919,13 +4137,18 @@ export default function App() {
       localStorage.removeItem("user");
       setRole(null);
       setCurrentUser(null);
-      transitionTo("login");
+      setHistory([]); // clear history on logout
+      setIsLoading(true);
+      window.setTimeout(() => {
+        setScreen("login");
+        setIsLoading(false);
+      }, 360);
       return;
     }
     const studentScreens: Screen[] = ["home", "preferences", "choose-room", "fee-receipt", "documents", "submitted", "booking-status"];
-    if (role === "student" && studentScreens.includes(nextScreen)) transitionTo(nextScreen);
-    if (role === "warden" && ["warden", "warden-booking"].includes(nextScreen)) transitionTo(nextScreen);
-    if (role === "admin" && nextScreen === "admin") transitionTo(nextScreen);
+    if (role === "student" && studentScreens.includes(nextScreen)) pushScreen(nextScreen);
+    if (role === "warden" && ["warden", "warden-booking"].includes(nextScreen)) pushScreen(nextScreen);
+    if (role === "admin" && nextScreen === "admin") pushScreen(nextScreen);
   };
 
   return (
@@ -2935,31 +4158,77 @@ export default function App() {
         {isLoading && <ScreenSkeleton />}
         {!isLoading && (
           <>
+            {role && !noBackScreens.includes(screen) && (
+              <div className="global-back-row">
+                <BackButton onClick={goBack} />
+              </div>
+            )}
             {screen === "login" && (
               <Login
                 onLogin={(nextRole, user) => {
                   setRole(nextRole);
                   setCurrentUser(user);
-                  transitionTo(nextRole === "student" ? "home" : nextRole === "warden" ? "warden" : "admin");
+                  setHistory([]); // clear history on login
+                  const homeScreen: Screen = nextRole === "student" ? "home" : nextRole === "warden" ? "warden" : "admin";
+                  setIsLoading(true);
+                  window.setTimeout(() => { setScreen(homeScreen); setIsLoading(false); }, 360);
                 }}
               />
             )}
-            {role === "student" && screen === "home" && <Home onContinue={() => transitionTo("preferences")} />}
-            {role === "student" && screen === "preferences" && <Preferences onSave={() => transitionTo("choose-room")} />}
-            {role === "student" && screen === "choose-room" && <ChooseRoom onHold={() => transitionTo("fee-receipt")} />}
-            {role === "student" && screen === "fee-receipt" && <FeeReceipt onNext={() => transitionTo("documents")} />}
-            {role === "student" && screen === "documents" && <UploadDocuments onSubmit={() => transitionTo("submitted")} />}
-            {role === "student" && screen === "submitted" && <SubmittedConfirmation onTrack={() => transitionTo("booking-status")} />}
-            {role === "student" && screen === "booking-status" && <BookingStatus />}
-            {role === "warden" && screen === "warden" && <WardenDashboard onOpen={(booking) => { setWardenBooking(booking); transitionTo("warden-booking"); }} />}
-            {role === "warden" && screen === "warden-booking" && wardenBooking && <WardenBookingDetail booking={wardenBooking} onBack={() => transitionTo("warden")} />}
+            {role === "student" && screen === "home" && <Home onGo={(next) => pushScreen(next)} />}
+            {role === "student" && screen === "preferences" && (
+              <Preferences
+                onSave={() => pushScreen("choose-room")}
+                onBack={goBack}
+              />
+            )}
+            {role === "student" && screen === "choose-room" && (
+              <ChooseRoom
+                onHold={() => pushScreen("fee-receipt")}
+                onExisting={(next) => showScreen(next)}
+                registerBackHandler={(fn) => { chooseRoomBackRef.current = fn; }}
+              />
+            )}
+            {role === "student" && screen === "fee-receipt" && (
+              <FeeReceipt
+                onNext={() => pushScreen("documents")}
+                onGo={(next) => pushScreen(next)}
+                onBack={goBack}
+              />
+            )}
+            {role === "student" && screen === "documents" && (
+              <UploadDocuments
+                onSubmit={() => {
+                  // After submit: go to "submitted" but clear history so Back never returns here
+                  setHistory([]);
+                  setIsLoading(true);
+                  window.setTimeout(() => { setScreen("submitted"); setIsLoading(false); }, 360);
+                }}
+                onGo={(next) => pushScreen(next)}
+                onBack={goBack}
+              />
+            )}
+            {role === "student" && screen === "submitted" && (
+              <SubmittedConfirmation
+                onTrack={() => {
+                  // From submitted → booking-status; but back from booking-status goes to home
+                  setHistory([]);
+                  showScreen("booking-status");
+                }}
+              />
+            )}
+            {role === "student" && screen === "booking-status" && (
+              <BookingStatus onGo={(next) => pushScreen(next)} onBack={goBack} />
+            )}
+            {role === "warden" && screen === "warden" && <WardenDashboard onOpen={(id) => { setWardenNotice(""); setWardenBookingId(id); pushScreen("warden-booking"); }} notice={wardenNotice} onDismissNotice={() => setWardenNotice("")} />}
+            {role === "warden" && screen === "warden-booking" && wardenBookingId !== null && <WardenBookingDetail bookingId={wardenBookingId} onDone={(message) => { setWardenNotice(message); pushScreen("warden"); }} onBack={goBack} />}
             {role === "admin" && screen === "admin" && <AdminView />}
           </>
         )}
       </div>
       <footer>
         <span>JKLU Hostel Booking</span>
-        <span>Prototype • 2025–26</span>
+        <span>Session 2026–27</span>
       </footer>
     </div>
   );

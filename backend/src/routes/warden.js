@@ -98,6 +98,16 @@ router.get('/occupancy', wrap(async (req, res) => {
   res.json(rows);
 }));
 
+// every bed of my hostel with its live status (used by the block-a-bed tool)
+router.get('/beds', wrap(async (req, res) => {
+  await pool.query('CALL sp_expire_holds()');
+  const [rows] = await pool.query(
+    `SELECT bed_id, hostel_name, floor_number, room_number, room_type, is_ac, bed_number, bed_level, bed_status
+       FROM v_bed_availability WHERE hostel_id = ?
+      ORDER BY floor_number, room_number, bed_number`, [req.user.hostel_id]);
+  res.json(rows);
+}));
+
 // block / unblock a damaged bed
 router.put('/beds/:id/block', wrap(async (req, res) => {
   const [r] = await pool.query(
